@@ -266,6 +266,10 @@ bcf_pred_no_tratados <- predict(modelo_bcf, X = data.frame(X=grilla_no_tratada$X
 
 set.seed(seed)
 
+```
+
+```{r cf y plot}
+
 y_forest <- grf::regression_forest(X = data.frame(df$X), Y=df$Y)
 y_hat <- y_forest$predictions
 
@@ -289,11 +293,11 @@ modelo_cf <- grf::causal_forest(
 tau_cf <- predict(modelo_cf, newdata=data.frame(X=grilla_tratada$X))
 
 # Predicción del contrafactual Y(0) (control)
-m_hat = predict(y_forest, newdata=data.frame(X=x_grid) )$predictions
-e_hat = predict(z_forest, newdata=data.frame(X=x_grid) )$predictions
+m_hat = predict(y_forest, newdata=data.frame(X=x_grid) )$predictions # m_hat: estimación de mu
+e_hat = predict(z_forest, newdata=data.frame(X=x_grid) )$predictions #e_hat: estimación del propensity score
 
-cf_pred_no_tratados <- m_hat - e_hat * tau_cf
-cf_pred_tratados <- m_hat + (1 - e_hat) * tau_cf
+cf_pred_no_tratados <- m_hat - e_hat * tau_cf 
+cf_pred_tratados <- m_hat + (1 - e_hat) * tau_cf #reconstruimos las predicciones del y con las estimaciones de mu y propscore
 ```
 
 ```{r plot_bcf_cf}
@@ -306,7 +310,7 @@ curva_bcf_no_tratados <- data.frame(
   X = x_grid,
   Y = rowMeans(bcf_pred_no_tratados$y_hat)
 )
-names(curva_bcf_no_tratados)
+
 
 curva_cf_tratados <- data.frame(
   X=x_grid,
@@ -375,6 +379,35 @@ ggsave("../figuras/resultados_inicial/ajuste_bcf.pdf", units = "in" , plot = (pl
 plot_cf
 ggsave("../figuras/resultados_inicial/ajuste_cf.pdf", units = "in" , plot = (plot_cf))
 ```
+```{r}
+curva_bcf_tratados_propscore_cf <- data.frame(
+  X = x_grid,
+  Y = rowMeans(bcf_pred_tratados$mu_hat) +((1 - e_hat)*rowMeans(bcf_pred_tratados$tau_hat))
+)
+
+curva_bcf_no_tratados_propscore_cf <- data.frame(
+  X = x_grid,
+  Y = rowMeans(bcf_pred_tratados$mu_hat) - (e_hat * rowMeans(bcf_pred_tratados$tau_hat))
+)
+
+plot_bcf_propscore_cf <- ggplot() +
+  geom_point(data = puntos_tratados, aes(x = X, y = Y, shape = "Tratados"), size = 3, stroke = 1.2) +
+  geom_point(data = puntos_no_tratados, aes(x = X, y = Y, shape = "No tratados"), size = 3, stroke = 1.2) +
+
+  geom_line(data = curva_teorica_tratados, aes(x = X, y = Y), color = "black", linewidth = 0.8) +
+  geom_line(data = curva_teorica_no_tratados, aes(x = X, y = Y), color = "black", linewidth = 0.8) +
+
+  geom_line(data = curva_bcf_tratados_propscore_cf, aes(x = X, y = Y), color = "blue", linewidth = 1) +
+  geom_line(data = curva_bcf_no_tratados_propscore_cf, aes(x = X, y = Y), color = "blue", linewidth = 1) +
+
+  scale_shape_manual(name = "Puntos", values = c("Tratados" = 1, "No tratados" = 2), guide = "none") +
+  theme(legend.position = "none") + 
+  theme_minimal() 
+
+plot_bcf_propscore_cf
+ggsave("../figuras/resultados_inicial/bcf_propscore_cf.pdf", units = "in" , plot = (plot_bcf_propscore_cf))
+```
+
 Para recrear la figura 1 (der.) calculamos el CATT para todos los modelos.
 Para hacer esto con BART necesitamos predecir el contrafactual de los tratados.
 ```{r}
@@ -425,6 +458,8 @@ cov_cate_bart <- ggplot() +
   theme(legend.position = "none") + 
   annotate("text", x=18, y = 30, label = paste0("Coverage = ", round(coverage_bart_tratados, 2))) +
   labs(x = "X", y = "Efecto estimado")
+
+cov_cate_bart
 
 ggsave("../figuras/resultados_inicial/cate_intervalos_bart.pdf", units = "in" , plot = (cov_cate_bart))
 ```
