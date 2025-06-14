@@ -1,0 +1,522 @@
+---
+title: "Experimentación inicial"
+author: "Constanza de Galvagni"
+date: "2025"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+En la primera parte de la experimentación vamos a replicar los resultados de Hill (2011) en la figura 1 de su paper, extendiendo la comparación a los modelos Bayesian Causal Forest y Causal Forest, y aumentando el grado del ajuste lineal a 3.
+
+## Configuración inicial
+
+Importamos los paquetes y establecemos la semilla. Si no existe el directorio para guardar las imágenes lo creamos.
+
+```{r paquetes}
+library(truncnorm)
+library(ggplot2)
+library(dbarts)
+library(polyreg)
+library(stochtree)
+library(grf)
+library(dplyr)
+
+seed = 1729
+set.seed(seed)
+
+if (!dir.exists("../figuras/resultados_inicial")) {
+  dir.create("../figuras/resultados_inicial")
+}
+
+```
+
+## Generación de datos iniciales
+
+Comenzamos la primera experimentación de los modelos sobre el dataset más básico, generado sobre las siguientes distribuciones:
+
+$$
+\begin{align*}
+    \mathbb{P}(Z) &\sim \text{Bernoulli}(0.5) \\
+    \mathbb{P}(X \mid Z=1) &\sim \mathcal{N}(40, 10^2) \\
+    \mathbb{P}(X \mid Z=0) &\sim \mathcal{N}(20, 10^2) \\
+    Y(0) \mid X &\sim \mathcal{N}(72 + 3\sqrt{X}, 1) \\
+    Y(1) \mid X &\sim \mathcal{N}(90 + \exp(0.06X), 1)
+\end{align*}
+$$
+
+
+
+```{r generacion_inicial}
+set.seed(seed)
+asignar_tratamiento <- rbinom(n=120, size=1, prob=0.5)
+pob_tratada <- which(asignar_tratamiento==1)
+pob_no_tratada <- which(asignar_tratamiento==0)
+nTreat = sum(asignar_tratamiento)
+
+confounders_x <- rep(NA,120)
+outcomes_y <- rep(NA, 120)
+for (i in 1:120){
+  if (asignar_tratamiento[i]==1){
+    confounders_x[i] <- rtruncnorm(1, a=0, mean=40, sd=10)
+    outcomes_y[i] <- rnorm(1, mean=90+exp(0.06*confounders_x[i]),sd=1)
+  } else {
+    confounders_x[i] <- rtruncnorm(1, a=0, mean=20, sd=10)
+    outcomes_y[i] <- rnorm(1, mean=72+3*sqrt(confounders_x[i]),sd=1)
+  }
+  #Con rtruncnorm forzamos a que las normales sean positivas para que no se indefina la sqrt
+}
+```
+
+Lo pasamos a dataframe para evaluar los modelos a continuación. También creamos una grilla de 1000 puntos para evaluar métricas.
+
+```{r dataframe_y_grilla}
+df <- data.frame(
+  X = confounders_x,
+  Z = asignar_tratamiento,
+  Y = outcomes_y
+)
+
+x_grid <- seq(min(df$X), max(df$X), length.out = 1000)
+df_grid <- data.frame(X=x_grid)
+```
+
+También vamos a crear otros dataframes para predecir distintas situaciones y calcular métricas de interés.
+
+- sup_todos_tratados: Contiene el conjunto original de individuos con toda la columna Z = 1. La usamos para predecir los contrafactuales para BART.
+- sup_todos_no_tratados: Idem que la anterior pero con la columna Z = 0.
+- df_tratados: Contiene el subconjunto de individuos tratados
+- grilla_tratada: Se utiliza para predecir el outcome de los valores posibles de X si todos fueran tratados.
+- grilla_no_tratada: Ídem, suponiendo que todos los valores posibles de X no hubieran sido tratados.
+
+```{r dataframes_auxiliares}
+df_tratados <- df[df$Z==1,]
+df_tratados_sinoutcome <- df[df$Z==1,c("X","Z")]
+df_no_tratados <- df[df$Z==0,]
+df_no_tratados_sinoutcome <- df[df$Z==0,c("X","Z")]
+
+grilla_tratada <- data.frame(
+  X= x_grid,
+  Z = 1
+)
+
+grilla_no_tratada <- data.frame(
+  X= x_grid,
+  Z= 0
+)
+```
+
+## Replicación de Fig 1, lado izquierdo
+### Ajuste y predicción con BART
+
+```{r experimentacion_bart}
+set.seed(seed)
+modelo_bart <- dbarts::bart2(Y ~ X + Z, 
+                             data = df, 
+                             keepTrees=TRUE, 
+                             verbose = FALSE,
+                             n.chain = 5,
+                             n.burn = 50,
+                             n.samples = 2000,
+                             n.thin = 2,
+                             seed = seed
+                             ) #Entreno sobre todos los X del dataset original
+
+#Para Fig.1 izq: Calculamos el Y (outcome)
+pred_bart_grilla_tratados <- predict(modelo_bart, grilla_tratada) #dim: n.samples x len(grilla)
+pred_bart_grilla_no_tratados <- predict(modelo_bart, grilla_no_tratada)
+
+#Calculamos la media de las predicciones para conseguir una predicción para cada individuo.
+media_outcomes_todostratados_bart <- colMeans(pred_bart_grilla_tratados)
+media_outcomes_todosnotratados_bart <- colMeans(pred_bart_grilla_no_tratados)
+```
+
+### Ajuste y predicción de una regresión lineal de grado 3
+```{r}
+modelo_polinomial_3 <- polyFit(xy = df[,c("X","Z","Y")], deg=3, use="lm")
+
+pred_outcome_todostratados_poly <- predict(modelo_polinomial_3, grilla_tratada)
+pred_outcome_todosnotratados_poly <- predict(modelo_polinomial_3, grilla_no_tratada)
+```
+
+Una vez ajustados los modelos, generamos el gráfico con los puntos, las curvas teóricas y las curvas de los modelos ajustados.
+
+```{r generar_fig1_izq, echo=FALSE}
+datos_fig1_izq <- list()
+datos_fig1_izq$puntos <- df
+
+curva_teorica_tratados <- data.frame(
+  X = x_grid,
+  Y = 90 + exp(0.06 * x_grid)
+)
+
+curva_teorica_no_tratados <- data.frame(
+  X = x_grid,
+  Y = 72 + 3 * sqrt(x_grid)
+)
+
+curva_bart_tratados <- data.frame(
+  X = x_grid,
+  Y = media_outcomes_todostratados_bart
+)
+
+curva_bart_no_tratados <- data.frame(
+  X = x_grid,
+  Y = media_outcomes_todosnotratados_bart
+)
+
+curva_poly_tratados <- data.frame(
+  X = x_grid,
+  Y = pred_outcome_todostratados_poly
+)
+
+curva_poly_no_tratados <- data.frame(
+  X = x_grid,
+  Y = pred_outcome_todosnotratados_poly
+)
+
+puntos_tratados <- df[df$Z == 1, c("X", "Y")]
+puntos_no_tratados <- df[df$Z == 0, c("X", "Y")]
+
+rep_fig1hillizq <- ggplot() +
+  # Puntos tratados (círculos)
+  geom_point(data = puntos_tratados, aes(x = X, y = Y), 
+             shape = 1, size = 3) +
+  # Puntos no tratados (diamantes)
+  geom_point(data = puntos_no_tratados, aes(x = X, y = Y), 
+             shape = 2, size = 3) +
+  
+  # Curvas teóricas (líneas sólidas negras)
+  geom_line(data = curva_teorica_tratados, aes(x = X, y = Y),
+            linetype = "solid", color = "black", linewidth = 0.8) +
+  geom_line(data = curva_teorica_no_tratados, aes(x = X, y = Y),
+            linetype = "solid", color = "black", linewidth = 0.8) +
+  
+  # Curvas BART (líneas discontinuas rojas)
+  geom_line(data = curva_bart_tratados, aes(x = X, y = Y),
+            linetype = "dashed", color = "red", linewidth = 1) +
+  geom_line(data = curva_bart_no_tratados, aes(x = X, y = Y),
+            linetype = "dashed", color = "red", linewidth = 1) +
+  
+  # Curvas Polinomiales (líneas de puntos y rayas grises)
+  geom_line(data = curva_poly_tratados, aes(x = X, y = Y),
+            linetype = "dotdash", color = "blue", linewidth = 0.8) +
+  geom_line(data = curva_poly_no_tratados, aes(x = X, y = Y),
+            linetype = "dotdash", color = "blue", linewidth = 0.8) +
+  #Estos puntos los voy a usar para la leyenda
+  geom_point(aes(x = 10, y = 110), shape = 2, size = 5) +  #triangulo
+  geom_point(aes(x = 10, y = 105), shape = 1, size = 5) + #circulo
+  # Etiquetas y tema
+  #labs(title = "Ajuste de BART y polinomio de grado 3",
+  #     x = "X", y = "Y") +
+  coord_cartesian(xlim=c(min(confounders_x),max(confounders_x)))+
+  theme_bw() +
+  coord_fixed() +
+  theme(plot.margin = margin(1, 1, 1, 1, "pt")) +
+  #  Leyenda manual
+  annotate("text", x = 10, y = 125, 
+           label = "——  Curvas teóricas", hjust = 0) +
+  annotate("text", x = 10, y = 120, 
+           label = "- - -  Ajuste BART", hjust = 0) +
+  annotate("text", x = 10, y = 115, 
+           label = "-·-·-  Ajuste de polinomio de grado 3", hjust = 0) +
+  annotate("text", x= 25, y = 110, label = "Individuos no tratados") +
+  annotate("text", x=25, y = 105, label = "Individuos tratados")
+
+ggsave("../figuras/resultados_inicial/bart_poly_teo.pdf", units = "in" , plot = (rep_fig1hillizq))
+```
+
+## Ajuste y visualización de BCF y Causal Forest
+```{r ajuste_bcf_cf}
+set.seed(seed)
+modelo_bcf_func <- function(seed) {
+  modelo <- stochtree::bcf(
+    X_train = data.frame(X=df$X),
+    Z_train = df$Z,
+    y_train = df$Y,
+    # Parámetros de muestreo
+    num_gfr = 5,                       # Iteraciones "grow-from-root"
+    num_burnin = 400,                  # Iteraciones de burn-in
+    num_mcmc = 400,                    # Iteraciones MCMC a guardar
+    # Parámetros específicos para los bosques
+    general_params = list(
+      verbose = FALSE,                  # NO Mostrar progreso
+      random_seed = seed
+    ),
+    prognostic_forest_params = list(
+      num_trees = 20                   # Número de árboles para función prognostica
+    ),
+    treatment_effect_forest_params = list(
+      num_trees = 5                    # Número de árboles para efecto de tratamiento
+    )
+  )
+  return(modelo)
+}
+
+modelo_bcf <- modelo_bcf_func(seed = seed)
+
+bcf_pred_tratados <- predict(modelo_bcf, X = data.frame(X=grilla_tratada$X), Z = grilla_tratada$Z)
+bcf_pred_no_tratados <- predict(modelo_bcf, X = data.frame(X=grilla_no_tratada$X), Z = grilla_no_tratada$Z)
+
+set.seed(seed)
+
+y_forest <- grf::regression_forest(X = data.frame(df$X), Y=df$Y)
+y_hat <- y_forest$predictions
+
+z_forest <- grf::regression_forest(X = data.frame(df$X), Y = df$Z)
+z_hat <- z_forest$predictions
+  
+modelo_cf <- grf::causal_forest(
+  X = data.frame(X=df$X),
+  W = df$Z, 
+  Y= df$Y, 
+  Y.hat = y_hat, 
+  W.hat = z_hat,
+  num.trees = 5000,
+  sample.fraction = 0.3,
+  honesty.fraction = 0.5,
+  mtry = 12,
+  min.node.size = 1,
+  alpha = 0.005,
+  seed = seed
+  )
+tau_cf <- predict(modelo_cf, newdata=data.frame(X=grilla_tratada$X))
+
+# Predicción del contrafactual Y(0) (control)
+m_hat = predict(y_forest, newdata=data.frame(X=x_grid) )$predictions
+e_hat = predict(z_forest, newdata=data.frame(X=x_grid) )$predictions
+
+cf_pred_no_tratados <- m_hat - e_hat * tau_cf
+cf_pred_tratados <- m_hat + (1 - e_hat) * tau_cf
+```
+
+```{r plot_bcf_cf}
+curva_bcf_tratados <- data.frame(
+  X = x_grid,
+  Y = rowMeans(bcf_pred_tratados$y_hat)
+)
+
+curva_bcf_no_tratados <- data.frame(
+  X = x_grid,
+  Y = rowMeans(bcf_pred_no_tratados$y_hat)
+)
+names(curva_bcf_no_tratados)
+
+curva_cf_tratados <- data.frame(
+  X=x_grid,
+  Y=cf_pred_tratados
+)
+names(curva_cf_tratados) <- c("X", "Y")
+
+curva_cf_no_tratados <- data.frame(
+  X=x_grid,
+  Y=c(cf_pred_no_tratados)
+)
+names(curva_cf_no_tratados) <- c("X", "Y")
+
+
+plot_bart <- ggplot() +
+  # puntos
+  geom_point(data = puntos_tratados, aes(x = X, y = Y, shape = "Tratados"), size = 3, stroke = 1.2) +
+  geom_point(data = puntos_no_tratados, aes(x = X, y = Y, shape = "No tratados"), size = 3, stroke = 1.2) +
+
+  # curvas teóricas
+  geom_line(data = curva_teorica_tratados, aes(x = X, y = Y), color = "black", linewidth = 0.8) +
+  geom_line(data = curva_teorica_no_tratados, aes(x = X, y = Y), color = "black", linewidth = 0.8) +
+
+  # curvas BART
+  geom_line(data = curva_bart_tratados, aes(x = X, y = Y), color = "red", linewidth = 1) +
+  geom_line(data = curva_bart_no_tratados, aes(x = X, y = Y), color = "red", linewidth = 1) +
+
+  scale_shape_manual(name = "Puntos", values = c("Tratados" = 1, "No tratados" = 2), guide = "none") +
+  theme(legend.position = "none") + 
+  theme_minimal() 
+  #+labs(title = "Modelo BART", x = "X", y = "Valor estimado")
+
+plot_bcf <- ggplot() +
+  geom_point(data = puntos_tratados, aes(x = X, y = Y, shape = "Tratados"), size = 3, stroke = 1.2) +
+  geom_point(data = puntos_no_tratados, aes(x = X, y = Y, shape = "No tratados"), size = 3, stroke = 1.2) +
+
+  geom_line(data = curva_teorica_tratados, aes(x = X, y = Y), color = "black", linewidth = 0.8) +
+  geom_line(data = curva_teorica_no_tratados, aes(x = X, y = Y), color = "black", linewidth = 0.8) +
+
+  geom_line(data = curva_bcf_tratados, aes(x = X, y = Y), color = "blue", linewidth = 1) +
+  geom_line(data = curva_bcf_no_tratados, aes(x = X, y = Y), color = "blue", linewidth = 1) +
+
+  scale_shape_manual(name = "Puntos", values = c("Tratados" = 1, "No tratados" = 2), guide = "none") +
+  theme(legend.position = "none") + 
+  theme_minimal() 
+  #+labs(title = "Modelo BCF", x = "X", y = "Valor estimado")
+
+plot_cf <- ggplot() +
+  geom_point(data = puntos_tratados, aes(x = X, y = Y, shape = "Tratados"), size = 3, stroke = 1.2) +
+  geom_point(data = puntos_no_tratados, aes(x = X, y = Y, shape = "No tratados"), size = 3, stroke = 1.2) +
+
+  geom_line(data = curva_teorica_tratados, aes(x = X, y = Y), color = "black", linewidth = 0.8) +
+  geom_line(data = curva_teorica_no_tratados, aes(x = X, y = Y), color = "black", linewidth = 0.8) +
+
+  geom_line(data = curva_cf_tratados, aes(x = X, y = Y), color = "green", linewidth = 1) +
+  geom_line(data = curva_cf_no_tratados, aes(x = X, y = Y), color = "green", linewidth = 1) +
+  theme(legend.position = "none") + 
+  scale_shape_manual(name = "Puntos", values = c("Tratados" = 1, "No tratados" = 2), guide = "none") +
+  theme_minimal() 
+  #+labs(title = "Modelo CF", x = "X", y = "Valor estimado")
+
+plot_bart
+ggsave("../figuras/resultados_inicial/ajuste_bart.pdf", units = "in" , plot = (plot_bart))
+plot_bcf
+ggsave("../figuras/resultados_inicial/ajuste_bcf.pdf", units = "in" , plot = (plot_bcf))
+plot_cf
+ggsave("../figuras/resultados_inicial/ajuste_cf.pdf", units = "in" , plot = (plot_cf))
+```
+Para recrear la figura 1 (der.) calculamos el CATT para todos los modelos.
+Para hacer esto con BART necesitamos predecir el contrafactual de los tratados.
+```{r}
+set.seed(seed)
+df_tratados <- df_tratados_sinoutcome
+df_tratados_contrafactual <- df_tratados_sinoutcome
+df_tratados_contrafactual[,"Z"] = 0
+
+pred_bart_tratados <- predict(modelo_bart, df_tratados)
+pred_bart_tratados_contrafact <- predict(modelo_bart, df_tratados_contrafactual)
+
+est_bart_tau <- pred_bart_tratados - pred_bart_tratados_contrafact
+sd_bart_tau <- apply(est_bart_tau, 2, sd)
+
+ci_bart_tau <- data.frame(
+  X = df_tratados$X,
+  mean = colMeans(est_bart_tau),
+  inf = colMeans(est_bart_tau) - 1.96*sd_bart_tau,
+  sup = colMeans(est_bart_tau)+ 1.96*sd_bart_tau
+)
+
+
+set.seed(seed)
+tau_teorico <- data.frame(
+  X = x_grid,
+  Y = curva_teorica_tratados$Y - curva_teorica_no_tratados$Y
+)
+
+tau_teorico_tratados <- numeric(nTreat)
+for(ind in 1:nTreat){
+  tau_teorico_tratados[ind] = 90 + exp(0.06*df_tratados$X[ind]) - (72 + 3 * sqrt(df_tratados$X[ind]))
+}
+
+coverage_bart_tratados <- rep(0, times = nTreat)
+for(i in 1:nTreat){
+  if(tau_teorico_tratados[i] > ci_bart_tau$inf[i] & tau_teorico_tratados[i] < ci_bart_tau$sup[i]){
+    coverage_bart_tratados[i] = 1
+  }
+}
+coverage_bart_tratados <- mean(coverage_bart_tratados)
+
+cov_cate_bart <- ggplot() +
+  geom_line(data = tau_teorico, aes(x = X, y = Y, color = "Teórica", linetype = "Teórica"), color = "black", linewidth = 0.8) + 
+  geom_errorbar(data = ci_bart_tau, aes(x = X, ymin = inf, ymax = sup), width = 0.2, color = "blue") +
+  geom_vline(xintercept = quantile(df_no_tratados$X, 0.9), linetype = "dashed", color = "red") +
+  geom_vline(xintercept = max(df_no_tratados$X), linetype = "dashed", color = "darkgreen") +
+  theme_minimal() +
+  theme(legend.position = "none") + 
+  annotate("text", x=18, y = 30, label = paste0("Coverage = ", round(coverage_bart_tratados, 2))) +
+  labs(x = "X", y = "Efecto estimado")
+
+ggsave("../figuras/resultados_inicial/cate_intervalos_bart.pdf", units = "in" , plot = (cov_cate_bart))
+```
+```{r}
+set.seed(seed)
+est_bcf_tau = list(10)
+for(i in 1:10){
+  bcf_act <- modelo_bcf_func(seed)
+  est_bcf_tau[[i]] <- predict(bcf_act, X = data.frame(X=df_tratados$X), Z = df_tratados$Z)
+}  
+
+
+mean_ci_bcf_tau <- lapply(est_bcf_tau,function(x){rowMeans(x$tau_hat)})
+sd_ci_bcf_tau <- lapply(est_bcf_tau, function(x){sd(x$tau_hat)})
+
+ci_bcf_tau <- vector("list", 10)
+
+for (i in 1:10) {
+  ci_bcf_tau[[i]] <- data.frame(
+    X = df_tratados$X,
+    mean = mean_ci_bcf_tau[[i]],
+    inf = mean_ci_bcf_tau[[i]] - 1.96 * sd_ci_bcf_tau[[i]],
+    sup = mean_ci_bcf_tau[[i]] + 1.96 * sd_ci_bcf_tau[[i]],
+    id = i
+  )
+}
+
+ci_bcf_tau_mean <- do.call(rbind, ci_bcf_tau) %>%
+  group_by(X) %>%
+  summarise(
+    mean = mean(mean),
+    inf = mean(inf),
+    sup = mean(sup),
+    .groups = "drop"
+  )
+
+coverage_bcf_tratados <- vector("numeric", length = 10)
+
+for (i in 1:10) {
+  coverage <- rep(0, times = nTreat)
+  
+  for (j in 1:nTreat) {
+    if (tau_teorico_tratados[j] > ci_bcf_tau[[i]]$inf[j] &
+        tau_teorico_tratados[j] < ci_bcf_tau[[i]]$sup[j]) {
+      coverage[j] <- 1
+    }
+  }
+  
+  coverage_bcf_tratados[i] <- mean(coverage)
+}
+
+cov_cate_bcf <- ggplot() +
+  geom_line(data = tau_teorico, aes(x = X, y = Y, color = "Teórica", linetype = "Teórica"), color = "black", linewidth = 0.8) + 
+  geom_errorbar(data = ci_bcf_tau_mean, aes(x = X, ymin = inf, ymax = sup), width = 0.2, color = "blue") +
+  geom_vline(xintercept = quantile(df_no_tratados$X, 0.9), linetype = "dashed", color = "red") +
+  geom_vline(xintercept = max(df_no_tratados$X), linetype = "dashed", color = "darkgreen") +
+  theme_minimal() +
+  theme(legend.position = "none") + 
+  annotate("text", x=18, y = 30, label = paste0("Coverage = ", round(mean(coverage_bcf_tratados), 2))) +
+  labs(x = "X")
+ggsave("../figuras/resultados_inicial/cate_intervalos_bcf.pdf", units = "in" , plot = (cov_cate_bcf))
+```
+
+
+```{r}
+est_cf_tau <- predict(modelo_cf, newdata = data.frame(X=df_tratados$X), estimate.variance = TRUE)
+sd_ci_cf_tau <- sqrt(est_cf_tau$variance.estimates)
+
+ci_cf_tau <- data.frame(
+  X=df_tratados$X,
+  means = est_cf_tau$predictions,
+  inf = est_cf_tau$predictions - 1.96*sd_ci_cf_tau,
+  sup = est_cf_tau$predictions + 1.96*sd_ci_cf_tau
+)
+
+
+coverage_cf_tratados <- rep(0, times = nTreat)
+for (i in 1:nTreat){
+  if(tau_teorico_tratados[i] > ci_cf_tau$inf[i] & tau_teorico_tratados[i]<ci_cf_tau$sup[i]){
+    coverage_cf_tratados[i] = 1
+  }
+}
+coverage_cf_tratados <- mean(coverage_cf_tratados)
+
+cov_cate_cf <- ggplot() +
+geom_line(data = tau_teorico, aes(x = X, y = Y, color = "Teórica", linetype = "Teórica"), color = "black", linewidth = 0.8) + 
+  geom_errorbar(data = ci_cf_tau, aes(x = X, ymin = inf, ymax = sup), width = 0.2, color = "blue") +
+  geom_vline(xintercept = quantile(df_no_tratados$X, 0.9), linetype = "dashed", color = "red") +
+  geom_vline(xintercept = max(df_no_tratados$X), linetype = "dashed", color = "darkgreen") +
+  theme_minimal() +
+  theme(legend.position = "none") + 
+  annotate("text", x=18, y = 30, label = paste0("Coverage = ", round(coverage_cf_tratados, 2)))
+  labs(x = "X")
+ggsave("../figuras/resultados_inicial/cate_intervalos_cf.pdf", units = "in" , plot = cov_cate_cf)
+```

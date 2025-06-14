@@ -1,0 +1,563 @@
+---
+title: "Optimización de hiperparámetros"
+author: "Constanza de Galvagni"
+date: '2025'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r warning = FALSE}
+library(Metrics)
+library(dbarts)
+library(tibble)
+library(stochtree)
+library(grf)
+library(coda)
+library(dplyr)
+seed = 1729
+```
+
+```{r}
+set.seed(seed)
+load('data/sim.data')
+
+obs <- imp1[!(imp1$treat==1 & imp1$momwhite==0),]
+
+covars_continuas = c("bw","b.head","preterm","birth.o","nnhealth","momage")
+covars_categoricas = c("sex","twin","b.marr","mom.lths","mom.hs",	"mom.scoll","cig","first","booze","drugs","work.dur","prenatal","ark","ein","har","mia","pen","tex","was")
+p = length(c(covars_continuas, covars_categoricas))
+all_covars <- c(covars_continuas, covars_categoricas)
+
+data_obs <- obs[,c(all_covars, "treat")]
+matrix_obs <- as.matrix(data_obs) #notar que matrix_obs incluye la columna de tratamiento
+obs_treated <- matrix_obs[matrix_obs[,"treat"]==1,]
+obs_control <- obs_treated
+
+col_tratamiento = obs$treat
+num_tratados = sum(col_tratamiento)
+
+obs_treated[,ncol(matrix_obs)] = 1
+obs_control[,ncol(matrix_obs)] = 0
+
+matrix_obs_test <- rbind(obs_treated, obs_control)
+
+X = obs[, all_covars]
+
+#Estandarizamos las variables continuas
+X[, covars_continuas] = as.data.frame(
+  t(
+    (t(X[, covars_continuas]) - unlist(lapply(X[,covars_continuas], mean)))/
+      sqrt(unlist(lapply(X[,covars_continuas], var)))
+  )
+)
+
+#Guardamos el número de observaciones y de covariables
+N = nrow(X)
+dimx = ncol(X)
+Xmat = as.matrix(X) #Xmat no incluye la columna de tratamiento
+Zvec = obs$treat
+
+set.seed(seed)
+muestra <- sample(c(TRUE, FALSE), nrow(matrix_obs), replace = TRUE, prob = c(0.7,0.3))
+obs_train <- matrix_obs[muestra, ]
+obs_test <- matrix_obs[!muestra, ]
+
+X_train <- obs_train[, -ncol(obs_train)]
+Z_train <- obs_train[, ncol(obs_train)]
+X_test <- obs_test[, -ncol(obs_test)]
+Z_test <- obs_test[, ncol(obs_test)]
+```
+
+Funciones que simulan las superficies de respuesta
+
+```{r}
+samplear_sup_A <- function(seed){
+  set.seed(seed)
+  betaA = sample(x = c(0:4), size = dimx + 1, replace = TRUE, prob = c(.5,.2,.15,.1,.05))
+  mean_y0 = cbind(rep(1,N),Xmat) %*% betaA
+  YA0 = rnorm(N, mean_y0, 1)
+  YA1 = rnorm(N, mean_y0 + 4, 1)
+  
+  #Creamos el vector YA de respuestas observadas
+  YA = YA1; YA[col_tratamiento == 0] = YA0[col_tratamiento==0]
+  
+  return(list(
+    YA = YA,
+    YA0 = YA0,
+    YA1 = YA1
+    ))
+}
+
+
+samplear_sup_B <- function(seed) {
+  set.seed(seed)
+  betaB = c(sample(c(.0,.1,.2,.3,.4),dimx+1,replace=TRUE,prob=c(.6,.1,.1,.1,.1)))
+  mean_yb0 = exp((cbind(rep(1,N), (Xmat+.5)) %*% betaB))
+  mean_yb1 = cbind(rep(1,N),(Xmat+.5))%*%betaB
+
+  offset = c(mean(mean_yb1[col_tratamiento==1]-mean_yb0[col_tratamiento==1])) - 4
+  mean_yb1 = cbind(rep(1,N), (Xmat+.5)) %*% betaB - offset
+  
+  YB0 = rnorm(N, mean_yb0, 1)
+  YB1 = rnorm(N, mean_yb1, 1)
+  
+  #Vector YB de respuestas observadas
+  YB = YB1; YB[col_tratamiento==0] = YB0[col_tratamiento == 0]
+  
+  return(list(
+    YB = YB,
+    YB0 = YB0,
+    YB1 = YB1
+    ))
+}
+```
+
+Creamos las superficies sobre las que vamos a probar las combinaciones de hiperparámetros.
+```{r}
+n_sups = 10
+sup_A_list <- replicate(n_sups, samplear_sup_A(seed), simplify = FALSE)
+sup_B_list <- replicate(n_sups, samplear_sup_B(seed), simplify = FALSE)
+```
+
+Creamos funciones para ajustar los modelos, permitiendo ajustar la mayor cantidad de hiperparámetros.
+
+## Experimentación para BART
+
+Comenzamos por BART. Buscamos obtener el `gelman_diag` más cercano a 1 con el ```effectiveSize```más grande posible
+```{r}
+set.seed(1729)
+metricas_markovchains_bart <- function(y, n.chains, n.burn, n.samples, n.thin, seed){
+    tiempo_bart <- system.time({
+      bart <- dbarts::bart2(formula = y ~ .,
+                            data = data_obs,
+                            verbose = FALSE,
+                            keepTrees = TRUE,
+                            n.chains = n.chains,
+                            n.threads = n.chains, #que corra todas las cadenas en paralelo
+                            n.burn = n.burn,
+                            n.samples = n.samples,
+                            seed = seed
+                            )
+    })
+    
+  
+                  
+  markovChains <- extract(bart)
+  
+  samples_per_chain <- nrow(markovChains) / n.chains
+  
+  chains = vector("list", n.chains)
+  for (i in 1:n.chains){
+    start <- round((i-1)*samples_per_chain + 1)
+    end <- round(i*samples_per_chain)
+    chains[[i]] <- mcmc(markovChains[start:end, ])
+  }
+  mcmc.list_chains <- mcmc.list(chains)
+  
+  # return(mcmc.list_chains)
+  
+  return(list(
+    point_gelman.diag_cadenas = gelman.diag(mcmc.list_chains, multivariate = FALSE)$psrf[,1],
+    effectiveSize_cadenas = effectiveSize(mcmc.list_chains),
+    tiempo_bart = tiempo_bart["elapsed"]
+  ))
+}
+```
+
+```{r}
+n.chains_vec <- c(2, 4, 5, 7, 10)
+n.burn_vec <- c(20, 50, 100, 200, 300, 500, 1000)
+n.samples_vec <- c(500, 1000, 2000, 2500, 3000)
+n.thin_vec <- c(5, 10, 2)
+
+resultados_bart_YA <- data.frame()
+resultados_bart_YB <- data.frame()
+
+n_combs = 7
+
+set.seed(1729)
+param_grid_bart = data.frame(
+  n.chains = sample(n.chains_vec, n_combs, replace = TRUE),
+  n.burn = sample(n.burn_vec, n_combs, replace = TRUE),
+  n.samples = sample(n.samples_vec, n_combs, replace = TRUE),
+  n.thin = sample(n.thin_vec, n_combs, replace = TRUE)
+  )
+
+print(param_grid_bart)
+
+for (i_sup in 1:n_sups) {
+  YA <- sup_A_list[[i_sup]]$YA
+  
+  for (i in 1:n_combs){
+    params <- param_grid_bart[i,]
+    
+    met <- metricas_markovchains_bart(
+      y = YA,
+      n.chains = params$n.chains,
+      n.burn = params$n.burn,
+      n.samples = params$n.samples,
+      n.thin = params$n.thin,
+      seed = seed
+    )
+    
+    resultados_bart_YA <- bind_rows(resultados_bart_YA, tibble(
+      superficie = i_sup,
+      combinacion = i,
+      gelman_diag = mean(as.numeric(met$point_gelman.diag_cadenas), na.rm = TRUE),
+      effective_size = mean(as.numeric(met$effectiveSize_cadenas), na.rm = TRUE),
+      tiempo = as.numeric(met$tiempo_bart),
+      n.chains = params$n.chains,
+      n.burn = params$n.burn,
+      n.samples = params$n.samples,
+      n.thin = params$n.thin
+    ))
+  }
+  
+  YB <- sup_B_list[[i_sup]]$YB
+  
+  for (i in 1:n_combs){
+    params <- param_grid_bart[i,]
+    
+    met <- metricas_markovchains_bart(
+      y = YB,
+      n.chains = params$n.chains,
+      n.burn = params$n.burn,
+      n.samples = params$n.samples,
+      n.thin = params$n.thin,
+      seed = seed
+    )
+    
+    resultados_bart_YB <- bind_rows(resultados_bart_YB, tibble(
+      superficie = i_sup,
+      combinacion = i,
+      gelman_diag = mean(as.numeric(met$point_gelman.diag_cadenas), na.rm = TRUE),
+      effective_size = mean(as.numeric(met$effectiveSize_cadenas), na.rm = TRUE),
+      tiempo = as.numeric(met$tiempo_bart),
+      n.chains = params$n.chains,
+      n.burn = params$n.burn,
+      n.samples = params$n.samples,
+      n.thin = params$n.thin
+    ))
+  }
+}
+
+```
+```{r}
+mean_bart_supA <- resultados_bart_YA %>%
+  group_by(combinacion) %>%
+  summarise(
+    mean_effsize = mean(effective_size, na.rm = TRUE),
+    mean_gelman = mean(gelman_diag, na.rm = TRUE),
+    mean_tiempo = mean(tiempo, na.rm = TRUE)
+  )
+
+mean_bart_supB <- resultados_bart_YB %>%
+  group_by(combinacion) %>%
+  summarise(
+    mean_effsize = mean(effective_size, na.rm = TRUE),
+    mean_gelman = mean(gelman_diag, na.rm = TRUE),
+    mean_tiempo = mean(tiempo, na.rm = TRUE)
+  )
+
+orden_gelman_A <- order(mean_bart_supA$mean_gelman)
+(mean_bart_supA[orden_gelman_A, ])
+
+orden_gelman_B <- order(mean_bart_supB$mean_gelman)
+(mean_bart_supB[orden_gelman_B,])
+```
+
+Nos quedamos con la combinación 7, que a pesar de tener menor valor en la métrica de effectiveSize sabemos que tiene buena convergencia gracias a la mètrica de Gelman-Rubin, y tiene muchísimo mejor desempeño temporal que la combinación 5.
+```{r}
+print(param_grid_bart[7,])
+```
+
+## Experimentación para BCF
+
+Notar que stochtree::bcf() corre **una sola cadena de markov**, por lo que en este caso en total de medir el diagnóstico de Gelman-Rubin, que mide la convergencia de cadenas MCMC ejecutadas en paralelo, vamos a medir la autocorrelación de la cadena generada para cada individuo.
+Devolvemos también el effectiveSize comparado con la longitud de la cadena de Markov, esperando que los valores ideales sean cercanos a 1.
+
+```{r}
+metricas_markovchains_bcf <- function(y, num_gfr, num_burnin, num_mcmc, prognostic_trees, treatment_trees, seed = seed){
+  tiempo_BCF <- system.time({
+    BCF <- stochtree::bcf(
+      X_train = Xmat,
+      Z_train = Zvec,
+      y_train = y,
+      num_gfr = num_gfr,
+      num_burnin = num_burnin,
+      num_mcmc = num_mcmc,
+      general_params = list(
+        verbose = FALSE,
+        random_seed = seed
+      ),
+      prognostic_forest_params = list(
+        num_trees = prognostic_trees
+      ),
+      treatment_effect_forest_params = list(
+        num_trees = treatment_trees
+      )
+    )
+  })
+  
+  markovChains_indiv <- BCF$y_hat_train
+  
+  prop_effectiveSize_individual <- apply(markovChains_indiv, 1, function(x) {
+    effectiveSize(mcmc(x))/num_mcmc
+  })
+  
+  autocorr_individual <- apply(markovChains_indiv, 1, function(x){
+    acf(x, lag.max = 1, plot = FALSE)$acf[2]
+  })
+  
+  return(list(
+    prop_effectiveSize = prop_effectiveSize_individual,
+    autocorr = autocorr_individual,
+    tiempo_BCF = tiempo_BCF["elapsed"]
+  ))
+}
+```
+
+Proponemos vectores de posibles hiperparámetros y hacemos random search sobre 10 combinaciones.
+
+```{r}
+nums_gfr <- c(10, 15, 5, 20)
+nums_burnin <- c(100, 200, 400, 500, 1000, 2000)
+proporciones_mcmc <- c(1,2,3,4)
+nums_prognostic_trees <- c(5, 10, 20, 30, 50)
+nums_treatment_trees <- c(5, 10, 20, 30, 25)
+
+resultados_bcf_YA <- data.frame()
+resultados_bcf_YB <- data.frame()
+
+set.seed(1729)
+param_grid_bcf <- data.frame(
+  num_gfr = sample(nums_gfr, n_combs, replace = TRUE),
+  num_burnin = sample(nums_burnin, n_combs, replace = TRUE),
+  proporcion_mcmc = sample(proporciones_mcmc, n_combs, replace = TRUE),
+  prognostic_trees = sample(nums_prognostic_trees, n_combs, replace = TRUE),
+  treatment_trees = sample(nums_treatment_trees, n_combs, replace = TRUE)
+)
+
+print(param_grid_bcf)
+
+for (i_sup in 1:n_sups){
+  YA <- sup_A_list[[i_sup]]$YA
+  
+  for (i in 1:n_combs){
+    params <- param_grid_bcf[i, ]
+    met <- metricas_markovchains_bcf(
+      y = YA,
+      num_gfr = params$num_gfr,
+      num_burnin = params$num_burnin,
+      num_mcmc = params$num_burnin * params$proporcion_mcmc,
+      prognostic_trees = params$prognostic_trees,
+      treatment_trees = params$treatment_trees,
+      seed = 1729
+    )
+    
+    resultados_bcf_YA <- bind_rows(resultados_bcf_YA, tibble(
+      superficie = i_sup,
+      combinacion = i,
+      prop_effectiveSize = mean(as.numeric(met$prop_effectiveSize), na.rm = TRUE),
+      autocorr = mean(as.numeric(met$autocorr), na.rm = TRUE),
+      tiempo = as.numeric(met$tiempo_BCF),
+      num_gfr = params$num_gfr,
+      num_burnin = params$num_burnin,
+      num_mcmc = params$num_burnin*params$proporcion_mcmc,
+      prognostic_trees = params$prognostic_trees,
+      treatment_trees = params$treatment_trees,
+    ))
+  }
+  
+  YB <- sup_B_list[[i_sup]]$YB
+  
+  for (i in 1:n_combs){
+    params <- param_grid_bcf[i, ]
+    met <- metricas_markovchains_bcf(
+      y = YB,
+      num_gfr = params$num_gfr,
+      num_burnin = params$num_burnin,
+      num_mcmc = params$num_burnin * params$proporcion_mcmc,
+      prognostic_trees = params$prognostic_trees,
+      treatment_trees = params$treatment_trees,
+      seed = 1729
+    )
+    
+    resultados_bcf_YB <- bind_rows(resultados_bcf_YB, tibble(
+      superficie = i_sup,
+      combinacion = i,
+      prop_effectiveSize = mean(as.numeric(met$prop_effectiveSize), na.rm = TRUE),
+      autocorr = mean(as.numeric(met$autocorr), na.rm = TRUE),
+      tiempo = as.numeric(met$tiempo_BCF),
+      num_gfr = params$num_gfr,
+      num_burnin = params$num_burnin,
+      num_mcmc = params$num_burnin*params$proporcion_mcmc,
+      prognostic_trees = params$prognostic_trees,
+      treatment_trees = params$treatment_trees
+    ))
+  }
+}
+```
+
+
+
+```{r}
+mean_bcf_supA <- resultados_bcf_YA %>%
+  group_by(combinacion) %>%
+  summarise(
+    mean_effsize = mean(prop_effectiveSize, na.rm = TRUE),
+    mean_autocorr = mean(autocorr, na.rm = TRUE),
+    mean_tiempo = mean(tiempo, na.rm = TRUE)
+  )
+
+mean_bcf_supB <- resultados_bcf_YB %>%
+  group_by(combinacion) %>%
+  summarise(
+    mean_effsize = mean(prop_effectiveSize, na.rm = TRUE),
+    mean_autocorr = mean(autocorr, na.rm = TRUE),
+    mean_tiempo = mean(tiempo, na.rm = TRUE)
+  )
+
+order_bcf_YA <- order(mean_bcf_supA$mean_autocorr)
+order_bcf_YB <- order(mean_bcf_supA$mean_autocorr)
+
+mean_bcf_supA[order_bcf_YA,]
+mean_bcf_supB[order_bcf_YB,]
+```
+
+Para el caso de BCF nos quedamos con la combinación de hiperparámetros #1, que es la de mejor performance en cuanto a effectiveSize y autocorrelación.
+
+```{r}
+print(param_grid_bcf[1,])
+```
+
+## Experimentación para CF
+
+Como este modelo no es bayesiano, en lugar de analizar la convergencia de las MCMC vamos a elegir los hiperparámetros que mejor performen en cuanto a RMSE.
+
+```{r}
+metricas_cf <- function(Y, num_trees, sample_fraction, honesty.fraction, mtry, min.node.size, alpha, seed){
+  y = Y[[1]]
+  y0 = Y[[2]]
+  y1 = Y[[3]]
+  
+  y_forest <- grf::regression_forest(X = Xmat, Y=y)
+  y_hat <- y_forest$predictions
+  
+  z_forest <- grf::regression_forest(X = Xmat, Y = Zvec)
+  z_hat <- z_forest$predictions
+  
+  tiempo_cf <- system.time({
+    CF <- grf::causal_forest(
+      X = Xmat,
+      Y = y,
+      W = Zvec,
+      Y.hat = y_hat,
+      W.hat = z_hat,
+      num.trees = num_trees,
+      sample.fraction = sample_fraction,
+      honesty.fraction = honesty.fraction,
+      mtry = mtry,
+      min.node.size = min.node.size,
+      alpha = alpha,
+      seed = seed,
+      # estimate.variance = FALSE
+    )
+  })
+  
+  tau_hat <- predict(CF)$predictions
+  
+  tau_true <- y1 - y0
+  
+  return(list(
+    rmse = rmse(tau_true, tau_hat),
+    tiempo_cf = tiempo_cf["elapsed"]
+    ))
+}
+```
+
+```{r}
+num_trees_cfs <- c(4000, 5000, 6000, 7000, 8000, 2000, 1000)
+sample_fractions <- c(0.3, 0.4, 0.5)
+mtrys <- c(floor(p / 2), floor(p / 3), floor(sqrt(p)), floor(p * 0.7))
+min.node.sizes <- c(1, 2, 3, 4)
+alphas <- c(0.005, 0.01, 0.02, 0.03)
+honesty_fractions <- c(0.3, 0.4, 0.5, 0.6, 0.7)
+
+resultados_cf_YA <- list()
+resultados_cf_YB <- list()
+
+set.seed(1729)
+param_grid_cf <- data.frame(
+  num_trees_cf = sample(num_trees_cfs, n_combs, replace = TRUE),
+  sample_fraction = sample(sample_fractions, n_combs, replace = TRUE),
+  honesty.fraction = sample(honesty_fractions, n_combs, replace = TRUE),
+  mtry = sample(mtrys, n_combs, replace = TRUE),
+  min.node.size = sample(min.node.sizes, n_combs, replace = TRUE),
+  alpha = sample(alphas, n_combs, replace = TRUE)
+)
+
+for (sup in 1:n_sups){
+  for(i in 1:n_combs){
+    ya_act <- sup_A_list[[sup]]
+    yb_act <- sup_B_list[[sup]]
+    params <- param_grid_cf[i, ]
+    key = paste0("metricas", "_comb_", i)
+    resultados_cf_YA[[key]] <- metricas_cf(
+      Y = ya_act,
+      num_trees = params$num_trees_cf,
+      sample_fraction = params$sample_fraction,
+      honesty.fraction = params$honesty.fraction,
+      mtry = params$mtry,
+      min.node.size = params$min.node.size,
+      alpha = params$alpha,
+      seed = seed
+    )
+      resultados_cf_YB[[key]] <- metricas_cf(
+      Y = yb_act,
+      num_trees = params$num_trees_cf,
+      sample_fraction = params$sample_fraction,
+      honesty.fraction = params$honesty.fraction,
+      mtry = params$mtry,
+      min.node.size = params$min.node.size,
+      alpha = params$alpha,
+      seed = seed
+    )
+  }
+}
+```
+Para Causal Forest buscamos tiempo y RMSE bajo.
+
+```{r}
+evaluar_rmse_cf <- function(resultados){
+  rmse <- array(dim = length(resultados))
+  tiempos <- array(dim = length(resultados))
+  for( i in 1:length(resultados)){
+    get_rmse <- sapply(resultados[i], function(x){x$rmse})
+    rmse[i] <- get_rmse
+    get_tiempo <- sapply(resultados[i], function(x){x$tiempo_cf})
+    tiempos[i] <- get_tiempo
+  }
+  return(data.frame(
+    rmse = rmse,
+    tiempos = tiempos
+  ))
+}
+
+evaluacion_cf_YA <- evaluar_rmse_cf(resultados_cf_YA)
+evaluacion_cf_YB <- evaluar_rmse_cf(resultados_cf_YB)
+
+order_CF_YA <- order(evaluacion_cf_YA$rmse)
+order_CF_YB <- order(evaluacion_cf_YB$rmse)
+
+evaluacion_cf_YA[order_CF_YA,]
+evaluacion_cf_YB[order_CF_YB,]
+```
+Nos quedamos con la combinación 2, ya que todas las combinaciones presentan una performance muy similar en cuanto a RMSE y ésta resulta la más eficiente para ambas, con muy buen desempeño temporal.
+
+```{r}
+print(param_grid_cf[2,])
+```
+

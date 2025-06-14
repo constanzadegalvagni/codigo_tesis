@@ -1,0 +1,843 @@
+---
+title: "Experimentación de superficies A y B"
+author: "Constanza de Galvagni"
+date: '2025'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r warning = FALSE}
+library(Metrics)
+library(dbarts)
+library(tibble)
+library(stochtree)
+library(grf)
+library(coda)
+
+seed = 1729
+```
+
+En este archivo se replica la experimentación realizada por Hill en su artículo de 2011 para evaluar la performance de BART en la predicción del CATE y el ATE para distintas superficies de respuesta basadas en el dataset IHDP.
+
+Se replican las métricas sobre `niters` superficies de cada tipo y se van escribiendo los resultados secuencialmente en dos archivos `.csv` para su posterior análisis.
+
+La ejecución, aún haciéndose en paralelo, lleva bastantes horas (más de 12 en mi caso) y al finalizarla se encontró un error en la estimación del ATE para BART, por lo que al final hay algunos chunks que se utilizaron para corregir este resultado y sobreescribirlo en el output.
+
+Leemos los datos usados por Hill con los que construyó las simulaciones
+
+```{r}
+load('data/sim.data')
+niters = 500
+```
+
+Simulamos que los datos observados son sólo de niños tratados con madre blanca y clasificamos las variables
+
+```{r}
+obs <- imp1[!(imp1$treat==1 & imp1$momwhite==0),]
+
+covars_continuas = c("bw","b.head","preterm","birth.o","nnhealth","momage")
+covars_categoricas = c("sex","twin","b.marr","mom.lths","mom.hs",	"mom.scoll","cig","first","booze","drugs","work.dur","prenatal","ark","ein","har","mia","pen","tex","was")
+p = length(c(covars_continuas, covars_categoricas))
+all_covars <- c(covars_continuas, covars_categoricas)
+```
+
+Preparo los datos para usar BART.
+Notar que usamos todos los datos en version "tratado" y "no tratado".
+
+```{r}
+data_obs <- obs[,c(all_covars, "treat")]
+matrix_obs <- as.matrix(data_obs) #notar que matrix_obs incluye la columna de tratamiento
+obs_treated <- matrix_obs[matrix_obs[,"treat"]==1,]
+obs_control <- obs_treated
+
+col_tratamiento = obs$treat
+num_tratados = sum(col_tratamiento)
+
+obs_treated[,ncol(matrix_obs)] = 1
+obs_control[,ncol(matrix_obs)] = 0
+```
+
+Simulamos los outcomes de la misma manera que Hill en su artículo
+
+```{r}
+X = obs[, all_covars]
+
+#Estandarizamos las variables continuas
+X[, covars_continuas] = as.data.frame(
+  t(
+    (t(X[, covars_continuas]) - unlist(lapply(X[,covars_continuas], mean)))/
+      sqrt(unlist(lapply(X[,covars_continuas], var)))
+  )
+)
+
+#Guardamos el número de observaciones y de covariables
+N = nrow(X)
+dimx = ncol(X)
+Xmat = as.matrix(X) #Xmat no incluye la columna de tratamiento
+
+#Separamos X en el conjunto de entrenamiento y de testeo
+set.seed(seed)
+
+muestra <- sample(c(TRUE, FALSE), nrow(matrix_obs), replace = TRUE, prob = c(0.7,0.3))
+obs_train <- matrix_obs[muestra, ]
+obs_test <- matrix_obs[!muestra, ]
+
+Ntrain = sum(muestra)
+Ntest = N - sum(muestra)
+
+X_train <- obs_train[, -ncol(obs_train)]
+Z_train <- obs_train[, ncol(obs_train)]
+X_test <- obs_test[, -ncol(obs_test)]
+Z_test <- obs_test[, ncol(obs_test)]
+
+obs_train_z_0 <- obs_train
+obs_train_z_0[,"treat"] = 0
+obs_train_z_1 <- obs_train
+obs_train_z_1[,"treat"] = 1
+
+obs_test_z_0 <- obs_test
+obs_test_z_0[,"treat"] = 0
+obs_test_z_1 <- obs_test
+obs_test_z_1[,"treat"] = 1
+
+X_train_contrafact <- data.frame(rbind(obs_train_z_1, obs_train_z_0))
+X_test_contrafact <- data.frame(rbind(obs_test_z_1, obs_test_z_0)) #Hago estas matrices para tener las estimaciones de los contrafactuales en bART
+```
+
+Creamos los dataframes en donde nos vamos a guardar los resultados obtenidos.
+También creamos los csv donde vamos a ir guardando los resultados a medida que hagamos las simulaciones.
+
+```{r}
+nouts = 2
+outputs = c("YA", "YB")
+
+colnames_resultados_bart <- c("BART.ate_train", "BART.ate_test","BART.rmse_ate_train",
+                              "BART.rmse_ate_test", "BART.gelman_train", "BART.gelman_test",
+                              "BART.effSize_train", "BART.effSize_test",
+                              "BART.prop_effSize_train", "BART.prop_effSize_test",
+                              "BART.coverage_ate_train", "BART.coverage_ate_test",
+                              "BART.tam_medio_ic_train", "BART.tam_medio_ic_test",
+                              "BART.media_sd_ic_train", "BART.media_sd_ic_test",
+                              "BART.rmse_cate_train", "BART.rmse_cate_test",
+                              "BART.coverage_cate_train", "BART.coverage_cate_test",
+                              "BART.tam_medio_ic_cate_train", "BART.tam_medio_ic_cate_test",
+                              "BART.media_sd_ic_cate_train", "BART.media_sd_ic_cate_test",
+                              "BART.tiempo(s)"
+                              )
+
+colnames_resultados_bcf <- c("BCF.ate_train", "BCF.ate_test",
+                             "BCF.rmse_ate_train", "BCF.rmse_ate_test",
+                             "BCF.rmse_cate_train", "BCF.rmse_cate_test",
+                             "BCF.effSize_train", "BCF.effSize_test",
+                             "BCF.prop_effSize_train", "BCF.prop_effSize_test",
+                             "BCF.autocorr_train", "BCF.autocorr_test",
+                             "BCF.coverage_ate_train", "BCF.coverage_ate_test",
+                             "BCF.coverage_cate_train", "BCF.coverage_cate_test",
+                             "BCF.tam_medio_ic_train", "BCF.tam_medio_ic_test",
+                             "BCF.media_sd_ic_train", "BCF.media_sd_ic_test",
+                             "BCF.tiempo(s)"
+                             )
+
+colnames_resultados_cf <- c("CF.ate_train", "CF.ate_test",
+                            "CF.rmse_ate_train", "CF.rmse_ate_test",
+                            "CF.rmse_cate_train", "CF.rmse_cate_test",
+                            "CF.coverage_ate_train", "CF.coverage_ate_test",
+                            "CF.coverage_cate_train", "CF.coverage_cate_test",
+                            "CF.tam_medio_ic_train", "CF.tam_medio_ic_test",
+                            "CF.media_sd_ic_train", "CF.media_sd_ic_test",
+                            "CF.tiempo(s)")
+
+colnames_resultados <- c(colnames_resultados_bart, colnames_resultados_bcf, colnames_resultados_cf)
+
+results_a <- data.frame(matrix(ncol = length(colnames_resultados), nrow = 0))
+colnames(results_a) <- colnames_resultados
+
+results_b <- results_a
+```
+
+```{r eval=FALSE}
+
+if (!dir.exists("resultados")) {
+  dir.create("resultados")
+}
+
+write.csv(results_a,file = "resultados/results_sup_A.csv", row.names = FALSE)
+write.csv(results_b, file = "resultados/results_sup_B.csv", row.names = FALSE)
+```
+
+## Simulaciones
+A partir de acá creamos ```niters``` superficies de respuesta variando las semillas. para cada una ajustamos los modelos de interés y calculamos los resultados de treatment effect, coverage y longitud de intervalos de confianza.
+
+Empezamos creando las funciones necesarias, y después iteramos con distintas semillas para obtener los distintos resultados.
+
+Creamos las superficies de respuesta: Para el número de iteraciones dado, generamos las superficies de respuesta con las ecuaciones originales:
+
+### Superficie de respuesta A
+$$
+Y(0) \sim \mathcal{N}(X \beta_A, 1)\\
+Y(1) \sim \mathcal{N}(X \beta_A + 4, 1)
+$$
+Donde $X$ es la matriz estandarizada de covariables y $\beta$ es un vector de coeficientes con la misma longitud que la cantidad de covariables, con valores sampleados aleatoriamente del conjunto $\{0,1,2,3,4\}$ con probabilidades $\{0.5,0.2,0.15,0.1,0.05\}$ respectivamente.
+
+De esta manera:
+```{r}
+samplear_sup_A <- function(seed){
+  set.seed(seed)
+  betaA = sample(x = c(0:4), size = dimx + 1, replace = TRUE, prob = c(.5,.2,.15,.1,.05))
+  mean_y0 = cbind(rep(1,N),Xmat) %*% betaA
+  YA0 = rnorm(N, mean_y0, 1)
+  YA1 = rnorm(N, mean_y0 + 4, 1)
+  
+  #Creamos el vector YA de respuestas observadas
+  YA = YA1; YA[col_tratamiento == 0] = YA0[col_tratamiento==0]
+  
+  return(list(
+    YA = YA,
+    YA0 = YA0,
+    YA1 = YA1
+    ))
+}
+```
+
+En este caso se está modelando una superficie lineal y paralela a los grupos tratados, y de forma tal que la estimación del efecto del tratamiento es 4 para todos (no hay heterogeneidad en el efecto del tratamiento).
+
+### Superficie de respuesta B
+$$
+Y(0) \sim \mathcal{N}(\text{exp}((X+W)\beta_B),1)\\
+Y(1) \sim \mathcal{N}(X\beta_B - \omega^s_B,1)
+$$
+Donde $W$ es una matriz $\textit{offset}$ de la misma dimensión de X con todos los valores en 0.5, $\beta_B$ es un vector de coeficientes de regresión $\{0,0.1,0.2,0.3,0.4\}$ sampleados aleatoriamente con probabilidades $\{0.6,0.1,0.1,0.1,0.1\}$ 
+
+Estos parámetros resultan en un CATT = 4.
+
+```{r}
+samplear_sup_B <- function(seed) {
+  set.seed(seed)
+  betaB = c(sample(c(.0,.1,.2,.3,.4),dimx+1,replace=TRUE,prob=c(.6,.1,.1,.1,.1)))
+  mean_yb0 = exp((cbind(rep(1,N), (Xmat+.5)) %*% betaB))
+  mean_yb1 = cbind(rep(1,N),(Xmat+.5))%*%betaB
+
+  offset = c(mean(mean_yb1[col_tratamiento==1]-mean_yb0[col_tratamiento==1])) - 4
+  mean_yb1 = cbind(rep(1,N), (Xmat+.5)) %*% betaB - offset
+  
+  YB0 = rnorm(N, mean_yb0, 1)
+  YB1 = rnorm(N, mean_yb1, 1)
+  
+  #Vector YB de respuestas observadas
+  YB = YB1; YB[col_tratamiento==0] = YB0[col_tratamiento == 0]
+  
+  return(list(
+    YB = YB,
+    YB0 = YB0,
+    YB1 = YB1
+    ))
+}
+```
+
+
+## Ajuste de modelos
+
+#### BART
+```{r}
+ajustar_barts<- function(Y, n.chains, n.burn, n.samples, n.thin, seed){
+  fmla <- as.formula(paste("y ~", paste(c(all_covars, "treat"), collapse = " + ")))
+  df_train <- data.frame(cbind(X_train, treat = Z_train, y = Y[[1]][muestra]))
+  
+  y = Y[[1]]
+  y0 = Y[[2]]
+  y1 = Y[[3]]
+  
+  y_train = y[muestra]
+  y_test = y[!muestra]
+  
+  y0_train = y0[muestra]
+  y0_test = y0[!muestra]
+  
+  y1_train = y1[muestra]
+  y1_test = y1[!muestra]
+  
+  tiempo_bart <- system.time({
+   bart <- dbarts::bart2(formula = fmla,
+                         data = df_train,
+                         verbose = FALSE,
+                         keepTrees = TRUE,
+                         n.chains = n.chains, #5
+                         n.burn = n.burn, #50
+                         n.samples = n.samples #2000
+                         ,n.thin=n.thin, #2
+                         seed = seed
+   )
+  })
+   
+  predict_train <- data.frame(X_train_contrafact)
+  predict_train$y <- c(y1_train, y0_train)
+  tau_teorico_train <- y1_train - y0_train
+
+  predict_test <- data.frame(X_test_contrafact)
+  predict_test$y <- c(y1_test, y0_test)
+  tau_teorico_test <- y1_test - y0_test
+    
+  chains_train = predict(bart, newdata = predict_train, combineChains = FALSE)
+  chains_test = predict(bart, newdata = predict_test, combineChains = FALSE)
+  
+  #Los predict tienen tamaño n_chains x tam_cadenas x individuos
+  
+  length_chains = dim(chains_train)[2]
+  
+  tau_chains_train = matrix(nrow = length_chains, ncol = n.chains)
+  tau_chains_test = matrix(nrow = length_chains, ncol = n.chains)
+  
+  for (chain in 1:n.chains){
+    for(ind in Ntrain){
+      tau_chains_train[,chain] = chains_train[chain,,ind] - chains_train[chain, ,ind + Ntrain]
+    } #Y_ind(1) - Y_ind(0)
+  }
+  
+  for (chain in 1:n.chains){
+    for(ind in Ntest){
+      tau_chains_test[,chain] = chains_test[chain,,ind] - chains_test[chain,,ind+Ntest]
+    }
+  }
+  
+  mean_chains_train <- apply(tau_chains_train, 2, mean)
+  mean_chains_test <- apply(tau_chains_test, 2, mean)
+  
+  sd_chains_train <- apply(tau_chains_train, 2, sd)
+  sd_chains_test <- apply(tau_chains_test, 2, sd)
+  
+  #Calculamos los intervalos de confianza de las cadenas y su coverage
+  
+  ics_train <- matrix(nrow = n.chains, ncol = 4)
+  ics_test <- matrix(nrow = n.chains, ncol = 4)
+  
+  for (chain in 1:n.chains){
+    ics_train[chain,1] = mean_chains_train[chain] - 1.96 * sd_chains_train[chain]
+    ics_train[chain,2] = mean_chains_train[chain] + 1.96 * sd_chains_train[chain]
+    ics_train[chain,3] = (ics_train[chain,1]<4 & ics_train[chain,2]>4)*1 #coverage. Está mal calculado. Al final del archivo lo corregimos y sobreescribimos el resultado en el archivo de respuesta.
+    ics_train[chain,4] = ics_train[chain,2] - ics_train[chain,1] #tamaño del intervalo
+    
+    ics_test[chain,1] = mean_chains_test[chain] - 1.96* sd_chains_test[chain]
+    ics_test[chain,2] = mean_chains_test[chain] + 1.96* sd_chains_test[chain]
+    ics_test[chain,3] = (ics_test[chain,1]<4 & ics_test[chain,2]>4)*1
+    ics_test[chain,4] = ics_test[chain,2] - ics_test[chain,1]
+  }
+  
+  coverage_ate_train = mean(ics_train[,3]) #Estoy promediando los CATEs, por eso es ATE.
+  #Vamos a tener tantas estimaciones de ATE como nchains, el promedio es la estimación del ATE que devolvemos
+  coverage_ate_test = mean(ics_test[,3])
+  
+  tam_medio_ic_train = mean(ics_train[,4])
+  tam_medio_ic_test = mean(ics_test[,4])
+  
+  media_mean_ic_train = mean(mean_chains_train)
+  media_mean_ic_test = mean(mean_chains_test)
+  
+  media_sd_ic_train = mean(sd_chains_train)
+  media_sd_ic_test = mean(sd_chains_test)
+  
+  
+  outcomes_train_comp <- predict(bart, newdata = cbind(X_train_contrafact))
+  outcomes_test_comp <- predict(bart, newdata = cbind(X_test_contrafact))
+  
+  outcomes_train = colMeans(outcomes_train_comp)
+  outcomes_test = colMeans(outcomes_test_comp)
+  
+  #En este caso para las predicciones de los outcomes sí combinamos las cadenas
+  
+  tau_train <- outcomes_train[1:Ntrain] - outcomes_train[(Ntrain+1):(2*Ntrain)] 
+  tau_test <- outcomes_test[1:Ntest] - outcomes_test[(Ntest+1):(2*Ntest)]
+  
+  sd_tau_train <- apply(outcomes_train_comp[,1:Ntrain] - outcomes_train_comp[,(Ntrain+1):(2*Ntrain)], 2, sd)
+  sd_tau_test <- apply(outcomes_test_comp[,1:Ntest] - outcomes_test_comp[,(Ntest+1):(2*Ntest)], 2, sd)
+  
+  cov_tau_train <- rep(0, Ntrain)
+  tam_medio_ic_tau_train <- rep(0, Ntrain)
+  for (i in 1:Ntrain){
+    inf = tau_train[i] - 1.96*sd_tau_train[i]
+    sup = tau_train[i] + 1.96*sd_tau_train[i]
+    tam_medio_ic_tau_train[i] = sup - inf
+    if(inf < tau_teorico_train[i] & sup > tau_teorico_train[i]){
+      cov_tau_train[i] = 1
+    }
+  }
+  cov_tau_train = mean(cov_tau_train)
+  tam_medio_ic_tau_train = mean(tam_medio_ic_tau_train)
+  
+  cov_tau_test = rep(0, Ntest)
+  tam_medio_ic_tau_test = rep(0, Ntest)
+  for(i in 1:Ntest){
+    inf = tau_test[i] - 1.96*sd_tau_test[i]
+    sup = tau_test[i] + 1.96*sd_tau_test[i]
+    tam_medio_ic_tau_test[i] = sup-inf
+    if(inf < tau_teorico_test[i] & sup > tau_teorico_test[i]){
+      cov_tau_test[i] = 1
+    }
+  }
+  cov_tau_test = mean(cov_tau_test)
+  tam_medio_ic_tau_test = mean(tam_medio_ic_tau_test)
+  
+  #Calculamos diagnóstico de Gelman y effectiveSize de las MCMCs
+  #Para calcular el diagnóstico de Gelman necesitamos tener todo en formato mcmc.list
+
+  gelman_individuos_train <- numeric(Ntrain)
+  effSize_individuos_train <- numeric(Ntrain)
+  
+  for(j in 1:Ntrain){
+    cadenas_j <- vector("list", n.chains)
+    for (i in 1:n.chains){
+      cadenas_j[[i]] <- mcmc(chains_train[i,,j])
+    }
+    mcmclist_j <- mcmc.list(cadenas_j)
+    gelman_individuos_train[j] <- gelman.diag(mcmclist_j)$psrf[1]
+    effSize_individuos_train[j] <- effectiveSize(mcmclist_j)
+  }
+  
+  gelman_individuos_test <- numeric(Ntest)
+  effSize_individuos_test <- numeric(Ntest)
+  
+  for(j in 1:Ntest){
+    cadenas_j <- vector("list", n.chains)
+    for (i in 1:n.chains){
+      cadenas_j[[i]] <- mcmc(chains_train[i,,j])
+    }
+    mcmclist_j <- mcmc.list(cadenas_j)
+    gelman_individuos_test[j] <- gelman.diag(mcmclist_j)$psrf[1]
+    effSize_individuos_test[j] <- effectiveSize(mcmclist_j)
+  }
+  
+  return(list(
+    ate_train = media_mean_ic_train,
+    ate_test = media_mean_ic_test,
+    rmse_ate_train = rmse(media_mean_ic_train, 4),
+    rmse_ate_test = rmse(media_mean_ic_test, 4),
+    gelman_train = mean(gelman_individuos_train),
+    gelman_test = mean(gelman_individuos_test),
+    effSize_train = mean(effSize_individuos_train),
+    effSize_test = mean(effSize_individuos_test),
+    prop_effSize_train = mean(effSize_individuos_train)/length_chains,
+    prop_effSize_test = mean(effSize_individuos_test)/length_chains,
+    coverage_ate_train = coverage_ate_train,
+    coverage_ate_test = coverage_ate_test,
+    tam_medio_ic_train = tam_medio_ic_train,
+    tam_medio_ic_test = tam_medio_ic_test,
+    media_sd_ic_train = media_sd_ic_train,
+    media_sd_ic_test = media_sd_ic_test,
+    rmse_cate_train = rmse(tau_teorico_train, tau_train),
+    rmse_cate_test = rmse(tau_teorico_test, tau_test),
+    coverage_cate_train = cov_tau_train,
+    coverage_cate_test = cov_tau_test,
+    tam_medio_ic_cate_train = tam_medio_ic_tau_train,
+    tam_medio_ic_cate_test = tam_medio_ic_tau_test,
+    media_sd_ic_cate_train = mean(sd_tau_train),
+    media_sd_ic_cate_test = mean(sd_tau_test),
+    tiempo_bart = tiempo_bart["elapsed"]
+    ))
+}
+```
+
+#### BCF
+```{r}
+ajustar_bcf <- function(Y, num_gfr, num_burnin, num_mcmc, prognostic_trees, treatment_trees, seed){
+  y = Y[[1]]
+  y0 = Y[[2]]
+  y1 = Y[[3]]
+  
+  tiempo_bcf <- system.time({
+  BCF <- stochtree::bcf(
+    X_train = X_train,
+    Z_train = Z_train,
+    y_train = y[muestra],
+    X_test = X_test,
+    Z_test = Z_test,
+      # Parámetros de muestreo
+    num_gfr = num_gfr,                   #5
+    num_burnin = num_burnin,              #400
+    num_mcmc = num_mcmc,                #400
+    # Parámetros específicos para los bosques
+    general_params = list(
+      verbose = FALSE, # NO Mostrar progreso
+      random_seed = seed
+    ),
+    prognostic_forest_params = list(
+      num_trees = prognostic_trees              #20
+    ),
+    treatment_effect_forest_params = list(
+      num_trees = treatment_trees              #5
+    )
+  )
+  })
+
+  tau_train = BCF$tau_hat_train
+  tau_test = BCF$tau_hat_test
+  
+  tau_teorico_train = y1[muestra] - y0[muestra]
+  tau_teorico_test = y1[!muestra] - y0[!muestra]
+  # dim(BCF$tau_hat_train) = nrow(X_train) x num_mcmc
+  
+  markovChain_train <- BCF$y_hat_train #tamaño individuos x num_mcmc
+  markovChain_test <- BCF$y_hat_test
+  
+  effSize_individuos_train <- numeric(Ntrain)
+  autocorr_individuos_train <- numeric(Ntrain)
+  
+  for(i in 1:Ntrain){
+    effSize_individuos_train[i] = effectiveSize(mcmc(markovChain_train[i,]))
+    autocorr_individuos_train[i] = acf(markovChain_train[i,], lag.max = 30, plot=FALSE)$acf[2]
+  }
+  
+  effSize_individuos_test <- numeric(Ntest)
+  autocorr_individuos_test <- numeric(Ntest)
+  
+  for(i in 1:Ntest){
+    effSize_individuos_test[i] = effectiveSize(mcmc(markovChain_test[i,]))
+    autocorr_individuos_test[i] = acf(markovChain_test[i,], lag.max = 30, plot = FALSE)$acf[2]
+  }
+  
+  mean_tau_train <- apply(tau_train, 1, mean)
+  mean_tau_test <- apply(tau_test, 1, mean)
+  sd_tau_train <- apply(tau_train, 1, sd)
+  sd_tau_test <- apply(tau_test, 1, sd)
+  
+  ci_tau_train <- matrix(nrow = Ntrain, ncol = 5)
+  ci_tau_test <- matrix(nrow = Ntest, ncol = 5)
+  
+  for (i in 1:Ntrain){
+    ci_tau_train[i, 1:2] <- c(mean_tau_train[i] - 1.96*sd_tau_train[i],
+                         mean_tau_train[i] + 1.96*sd_tau_train[i])
+    ci_tau_train[i,3] <- (ci_tau_train[i,1] < 4 & ci_tau_train[i,2] > 4)*1
+    ci_tau_train[i,4] <- (ci_tau_train[i,1] < tau_teorico_train[i] & ci_tau_train[i,2] > tau_teorico_train[i]) * 1
+    ci_tau_train[i,5] <- ci_tau_train[i,2] - ci_tau_train[i,1]
+  }
+  
+  for (i in 1:Ntest){
+    ci_tau_test[i, 1:2] <- c(mean_tau_test[i] - 1.96*sd_tau_test[i],
+                        mean_tau_test[i] + 1.96*sd_tau_test[i])
+    ci_tau_test[i,3] <- (ci_tau_test[i,1] < 4 & ci_tau_test[i,2] > 4)*1
+    ci_tau_train[i,4] <- (ci_tau_test[i,1] < tau_teorico_test[i] & ci_tau_test[i,2] > tau_teorico_test[i]) * 1
+    ci_tau_test[i,5] <- ci_tau_test[i,2] - ci_tau_test[i,1]
+  }
+  
+  coverage_ate_train <- mean(ci_tau_train[,3])
+  coverage_ate_test <- mean(ci_tau_test[,3])
+  coverage_cate_train <- mean(ci_tau_train[,4])
+  coverage_cate_test <- mean(ci_tau_test[,4])
+  tam_medio_ic_train <- mean(ci_tau_train[,5])
+  tam_medio_ic_test <- mean(ci_tau_test[,5])
+  
+  media_mean_ics_train = mean(mean_tau_train)
+  media_mean_ics_test = mean(mean_tau_test)
+  media_sd_ics_train = mean(sd_tau_train)
+  media_sd_ics_test = mean(sd_tau_test)
+  
+  return(list(
+    #En este caso usamos los mismos intervalos para calcular coverage del CATE y del ATE
+    ate_train = media_mean_ics_train,
+    ate_test = media_mean_ics_test,
+    rmse_ate_train = rmse(4, media_mean_ics_train),
+    rmse_ate_test = rmse(4, media_mean_ics_test),
+    rmse_tau_train = rmse(tau_teorico_train, mean_tau_train),
+    rmse_tau_test = rmse(tau_teorico_test, mean_tau_test),
+    effSize_individuos_train = mean(effSize_individuos_train),
+    effSize_individuos_test = mean(effSize_individuos_test),
+    prop_effSize_individuos_train = mean(effSize_individuos_train)/num_mcmc,
+    prop_effSize_individuos_test = mean(effSize_individuos_test)/num_mcmc,
+    autocorr_individuos_train = mean(autocorr_individuos_train),
+    autocorr_individuos_test = mean(autocorr_individuos_test),
+    coverage_ate_train = coverage_ate_train,
+    coverage_ate_test = coverage_ate_test,
+    coverage_cate_train = coverage_cate_train,
+    coverage_cate_test = coverage_cate_test,
+    tam_medio_ic_train = tam_medio_ic_train,
+    tam_medio_ic_test = tam_medio_ic_test,
+    media_sd_ics_train = media_sd_ics_train,
+    media_sd_ics_test = media_sd_ics_test,
+    tiempo_bcf = tiempo_bcf["elapsed"]
+  ))
+}
+```
+
+#### CF
+```{r}
+ajustar_cf <- function(Y, num_trees, sample_fraction, honesty.fraction, mtry, min.node.size, alpha, seed){
+  y = Y[[1]]
+  y0 = Y[[2]]
+  y1 = Y[[3]]
+
+  y_train <- y[muestra]
+  y_test <- y[!muestra]
+  
+  tau_teorico_train <- y1[muestra] - y0[muestra]
+  tau_teorico_test <- y1[!muestra] - y0[!muestra]
+  
+  y_forest <- grf::regression_forest(X = X_train, Y=y_train)
+  y_hat <- y_forest$predictions
+  
+  z_forest <- grf::regression_forest(X = X_train, Y = Z_train)
+  z_hat <- z_forest$predictions
+  
+  tiempo_cf <- system.time({
+  CF <- grf::causal_forest(X = X_train,
+                           W = Z_train,
+                           Y = y_train,
+                           Y.hat = y_hat,
+                           W.hat = z_hat,
+                           num.trees = num_trees, #5000
+                           sample.fraction = sample_fraction, #0.3
+                           honesty.fraction = honesty.fraction, #0.5
+                           mtry = mtry, #12
+                           min.node.size = min.node.size, #1
+                           alpha = alpha, #0.005
+                           seed = seed
+                           )
+  })
+
+  #Devolvemos las estimaciones del tau para train y test para comparar con el tau original
+  pred_cf_train <- predict(CF, newdata=X_train, estimate.variance = TRUE)
+  pred_cf_test <- predict(CF, newdata = X_test, estimate.variance = TRUE)
+
+  tau_cf_train = pred_cf_train$predictions
+  sd_cf_train = sqrt(pred_cf_train$variance.estimates)
+  tau_cf_test = pred_cf_test$predictions
+  sd_cf_test = sqrt(pred_cf_test$variance.estimates)
+  
+  ci_tau_train <- matrix(nrow = Ntrain, ncol = 5)
+  ci_tau_test <- matrix(nrow = Ntest, ncol = 5)
+  
+  for (i in 1:Ntrain){
+    ci_tau_train[i,1:2] <- c(tau_cf_train[i] - 1.96*sd_cf_train[i],
+                         tau_cf_train[i] + 1.96*sd_cf_train[i])
+    ci_tau_train[i,3] <- (ci_tau_train[i,1] < 4 & ci_tau_train[i,2] > 4)*1
+    ci_tau_train[i,4] <- (ci_tau_train[i,1] < tau_teorico_train[i] & ci_tau_train[i,2] > tau_teorico_train[i])*1
+    ci_tau_train[i,5] <- ci_tau_train[i,2] - ci_tau_train[i,1]
+  }
+  
+  for (i in 1:Ntest){
+    ci_tau_test[i,1:2] <- c(tau_cf_test[i] - 1.96*sd_cf_test[i],
+                        tau_cf_test[i] + 1.96*sd_cf_test[i])
+    ci_tau_test[i,3] <- (ci_tau_test[i,1] < 4 & ci_tau_test[i,2] > 4)*1
+    ci_tau_test[i,4] <- (ci_tau_test[i,1] < tau_teorico_test[i] & ci_tau_test[i,2] > tau_teorico_test[i])*1
+    ci_tau_test[i,5] <- ci_tau_test[i,2] - ci_tau_test[i,1]
+  }
+  
+  coverage_ate_train <- mean(ci_tau_train[,3])
+  coverage_ate_test <- mean(ci_tau_test[,3])
+  coverage_cate_train <- mean(ci_tau_train[,4])
+  coverage_cate_test <- mean(ci_tau_test[,4])
+  tam_medio_ic_train <- mean(ci_tau_train[,5])
+  tam_medio_ic_test <- mean(ci_tau_test[,5])
+
+  media_sd_ics_train = mean(sd_cf_train)
+  media_sd_ics_test = mean(sd_cf_test)
+  
+
+  return(list(
+    ate_train = mean(tau_cf_train),
+    ate_test = mean(tau_cf_test),
+    rmse_ate_train = rmse(4, mean(tau_cf_train)),
+    rmse_ate_test = rmse(4, mean(tau_cf_test)),
+    rmse_tau_train = rmse(tau_teorico_train, tau_cf_train),
+    rmse_tau_test = rmse(tau_teorico_test, tau_cf_test),
+    coverage_ate_train = coverage_ate_train,
+    coverage_ate_test = coverage_ate_test,
+    coverage_cate_train = coverage_cate_train,
+    coverage_cate_test = coverage_cate_test,
+    tam_medio_ic_train = tam_medio_ic_train,
+    tam_medio_ic_test = tam_medio_ic_test,
+    media_sd_ics_train = media_sd_ics_train,
+    media_sd_ics_test = media_sd_ics_test,
+    tiempo_cf = tiempo_cf["elapsed"]
+    )
+  )
+}
+```
+
+## Evaluación de resultados
+
+```{r warning=FALSE}
+evaluar_modelos <- function(seed){
+  YA <- samplear_sup_A(seed)
+  YB <- samplear_sup_B(seed)
+  set.seed(seed)
+  #Para cada superficie vamos corriendo los modelos con los hiperparámetros óptimos y guardando los resultados
+  
+  est_bart_YA <- ajustar_barts(YA, 5, 50, 2000, 2, seed)
+  est_bcf_YA <- ajustar_bcf(YA, 5, 400, 400, 20, 5, seed)
+  est_cf_YA <- ajustar_cf(YA, 5000, 0.3, 0.5, 12, 1, 0.005, seed)
+  
+  est_bart_YB <- ajustar_barts(YB, 5, 50, 2000, 2, seed)
+  est_bcf_YB <- ajustar_bcf(YB, 5, 400, 400, 20, 5, seed)
+  est_cf_YB <- ajustar_cf(YB, 5000, 0.3, 0.5, 12, 1, 0.005, seed)
+  
+  #escribimos los datos en los csv
+  fila_resultado_A <- data.frame(est_bart_YA$ate_train, est_bart_YA$ate_test, est_bart_YA$rmse_ate_train, est_bart_YA$rmse_ate_test, est_bart_YA$gelman_train, est_bart_YA$gelman_test, est_bart_YA$effSize_train, est_bart_YA$effSize_test, est_bart_YA$prop_effSize_train, est_bart_YA$prop_effSize_test, est_bart_YA$coverage_ate_train, est_bart_YA$coverage_ate_test, est_bart_YA$tam_medio_ic_train, est_bart_YA$tam_medio_ic_test, est_bart_YA$media_sd_ic_train, est_bart_YA$media_sd_ic_test, est_bart_YA$rmse_cate_train, est_bart_YA$rmse_cate_test, est_bart_YA$coverage_cate_train, est_bart_YA$coverage_cate_test, est_bart_YA$tam_medio_ic_cate_train, est_bart_YA$tam_medio_ic_cate_test, est_bart_YA$media_sd_ic_cate_train, est_bart_YA$media_sd_ic_cate_test, est_bart_YA$tiempo_bart, est_bcf_YA$ate_train, est_bcf_YA$ate_test, est_bcf_YA$rmse_ate_train, est_bcf_YA$rmse_ate_test, est_bcf_YA$rmse_tau_train, est_bcf_YA$rmse_tau_test, est_bcf_YA$effSize_individuos_train, est_bcf_YA$effSize_individuos_test, est_bcf_YA$prop_effSize_individuos_train, est_bcf_YA$prop_effSize_individuos_test, est_bcf_YA$autocorr_individuos_train, est_bcf_YA$autocorr_individuos_test, est_bcf_YA$coverage_ate_train, est_bcf_YA$coverage_ate_test, est_bcf_YA$coverage_cate_train, est_bcf_YA$coverage_cate_test, est_bcf_YA$tam_medio_ic_train, est_bcf_YA$tam_medio_ic_test, est_bcf_YA$media_sd_ics_train, est_bcf_YA$media_sd_ics_test, est_bcf_YA$tiempo_bcf, est_cf_YA$ate_train, est_cf_YA$ate_test, est_cf_YA$rmse_ate_train, est_cf_YA$rmse_ate_test, est_cf_YA$rmse_tau_train, est_cf_YA$rmse_tau_test, est_cf_YA$coverage_ate_train, est_cf_YA$coverage_ate_test, est_cf_YA$coverage_cate_train, est_cf_YA$coverage_cate_test, est_cf_YA$tam_medio_ic_train, est_cf_YA$tam_medio_ic_test, est_cf_YA$media_sd_ics_train, est_cf_YA$media_sd_ics_test, est_cf_YA$tiempo_cf
+  )
+
+    fila_resultado_B <- data.frame(est_bart_YB$ate_train, est_bart_YB$ate_test, est_bart_YB$rmse_ate_train, est_bart_YB$rmse_ate_test, est_bart_YB$gelman_train, est_bart_YB$gelman_test, est_bart_YB$effSize_train, est_bart_YB$effSize_test, est_bart_YB$prop_effSize_train, est_bart_YB$prop_effSize_test, est_bart_YB$coverage_ate_train, est_bart_YB$coverage_ate_test, est_bart_YB$tam_medio_ic_train, est_bart_YB$tam_medio_ic_test, est_bart_YB$media_sd_ic_train, est_bart_YB$media_sd_ic_test, est_bart_YB$rmse_cate_train, est_bart_YB$rmse_cate_test, est_bart_YB$coverage_cate_train, est_bart_YB$coverage_cate_test, est_bart_YB$tam_medio_ic_cate_train, est_bart_YB$tam_medio_ic_cate_test, est_bart_YB$media_sd_ic_cate_train, est_bart_YB$media_sd_ic_cate_test, est_bart_YB$tiempo_bart, est_bcf_YB$ate_train, est_bcf_YB$ate_test, est_bcf_YB$rmse_ate_train, est_bcf_YB$rmse_ate_test, est_bcf_YB$rmse_tau_train, est_bcf_YB$rmse_tau_test, est_bcf_YB$effSize_individuos_train, est_bcf_YB$effSize_individuos_test, est_bcf_YB$prop_effSize_individuos_train, est_bcf_YB$prop_effSize_individuos_test, est_bcf_YB$autocorr_individuos_train, est_bcf_YB$autocorr_individuos_test, est_bcf_YB$coverage_ate_train, est_bcf_YB$coverage_ate_test, est_bcf_YB$coverage_cate_train, est_bcf_YB$coverage_cate_test, est_bcf_YB$tam_medio_ic_train, est_bcf_YB$tam_medio_ic_test, est_bcf_YB$media_sd_ics_train, est_bcf_YB$media_sd_ics_test, est_bcf_YB$tiempo_bcf, est_cf_YB$ate_train, est_cf_YB$ate_test, est_cf_YB$rmse_ate_train, est_cf_YB$rmse_ate_test, est_cf_YB$rmse_tau_train, est_cf_YB$rmse_tau_test, est_cf_YB$coverage_ate_train, est_cf_YB$coverage_ate_test, est_cf_YB$coverage_cate_train, est_cf_YB$coverage_cate_test, est_cf_YB$tam_medio_ic_train, est_cf_YB$tam_medio_ic_test, est_cf_YB$media_sd_ics_train, est_cf_YB$media_sd_ics_test, est_cf_YB$tiempo_cf
+)
+  
+  write.table(fila_resultado_A, file = "resultados/results_sup_A.csv",
+            sep = ",", row.names = FALSE, col.names = !file.exists("resultados/results_sup_A.csv"),
+            append = TRUE)
+
+  write.table(fila_resultado_B, file = "resultados/results_sup_B.csv",
+            sep = ",", row.names = FALSE, col.names = !file.exists("resultados/results_sup_B.csv"),
+            append = TRUE)
+}
+
+seeds <- numeric(niters)
+for(i in 1:niters){
+    #Para cada semilla se genera una sup.de rta.
+    if(i<=(niters/2)){seeds[i] <- (565 + i*5)}
+    if(i>(niters/2)){seeds[i] <- (7565 + i*5)}
+}
+
+```
+
+Por último, creamos la función que corre todo en paralelo, para mejor eficiencia.
+
+Este chunk está desactivado para que no se corra durante el knit.
+
+```{r eval=FALSE, warning=FALSE}
+library(future.apply)
+plan(multisession, workers = parallel::detectCores()-1)
+
+resultados <- future_lapply(seeds, function(semilla){
+  library(here)
+  set.seed(semilla)
+  evaluar_modelos(semilla)
+}, future.seed = TRUE)
+```
+A partir de acá corregimos el error en la estimación del coverage del ATE para BART. Este chunk está desactivado para el knit.
+```{r eval = FALSE}
+get_barts_ate<- function(Y, n.chains, n.burn, n.samples, n.thin, seed){
+  fmla <- as.formula(paste("y ~", paste(c(all_covars, "treat"), collapse = " + ")))
+  df_train <- data.frame(cbind(X_train, treat = Z_train, y = Y[[1]][muestra]))
+  
+  y = Y[[1]]
+  y0 = Y[[2]]
+  y1 = Y[[3]]
+  
+  y_train = y[muestra]
+  y_test = y[!muestra]
+  
+  y0_train = y0[muestra]
+  y0_test = y0[!muestra]
+  
+  y1_train = y1[muestra]
+  y1_test = y1[!muestra]
+  
+  tiempo_bart <- system.time({
+   bart <- dbarts::bart2(formula = fmla,
+                         data = df_train,
+                         verbose = FALSE,
+                         keepTrees = TRUE,
+                         n.chains = n.chains, #5
+                         n.burn = n.burn, #50
+                         n.samples = n.samples #2000
+                         ,n.thin=n.thin, #2
+                         seed = seed
+   )
+  })
+   
+  predict_train <- data.frame(X_train_contrafact)
+  predict_train$y <- c(y1_train, y0_train)
+  tau_teorico_train <- y1_train - y0_train
+
+  predict_test <- data.frame(X_test_contrafact)
+  predict_test$y <- c(y1_test, y0_test)
+  tau_teorico_test <- y1_test - y0_test
+  
+  outcomes_train_comp <- predict(bart, newdata = cbind(X_train_contrafact))
+  outcomes_test_comp <- predict(bart, newdata = cbind(X_test_contrafact))
+  
+  outcomes_train = colMeans(outcomes_train_comp)
+  outcomes_test = colMeans(outcomes_test_comp)
+  
+  #En este caso para las predicciones de los outcomes sí combinamos las cadenas
+  
+  tau_train <- outcomes_train[1:Ntrain] - outcomes_train[(Ntrain+1):(2*Ntrain)] 
+  tau_test <- outcomes_test[1:Ntest] - outcomes_test[(Ntest+1):(2*Ntest)]
+  
+  sd_tau_train <- apply(outcomes_train_comp[,1:Ntrain] - outcomes_train_comp[,(Ntrain+1):(2*Ntrain)], 2, sd)
+  sd_tau_test <- apply(outcomes_test_comp[,1:Ntest] - outcomes_test_comp[,(Ntest+1):(2*Ntest)], 2, sd)
+  
+  cov_tau_train = rep(0, Ntrain)
+  cov_ate_train = rep(0, Ntrain)
+  tam_medio_ic_tau_train = rep(0, Ntrain)
+  for(i in 1:Ntrain){
+    inf = tau_train[i] - 1.96*sd_tau_train[i]
+    sup = tau_train[i] + 1.96*sd_tau_train[i]
+    tam_medio_ic_tau_train[i] = sup-inf
+    if(inf < tau_teorico_train[i] & sup > tau_teorico_train[i]){
+      cov_tau_train[i] = 1
+    }
+    if(inf < 4 & sup > 4){
+      cov_ate_train[i] = 1
+    }
+  }
+  cov_tau_train = mean(cov_tau_train)
+  cov_ate_train = mean(cov_ate_train)
+  tam_medio_ic_tau_train = mean(tam_medio_ic_tau_train)
+  
+  cov_tau_test = rep(0, Ntest)
+  cov_ate_test = rep(0, Ntest)
+  tam_medio_ic_tau_test = rep(0, Ntest)
+  for(i in 1:Ntest){
+    inf = tau_test[i] - 1.96*sd_tau_test[i]
+    sup = tau_test[i] + 1.96*sd_tau_test[i]
+    tam_medio_ic_tau_test[i] = sup-inf
+    if(inf < tau_teorico_test[i] & sup > tau_teorico_test[i]){
+      cov_tau_test[i] = 1
+    }
+    if(inf < 4 & sup > 4){
+      cov_ate_test[i] = 1
+    }
+  }
+  cov_tau_test = mean(cov_tau_test)
+  cov_ate_test = mean(cov_ate_test)
+  tam_medio_ic_tau_test = mean(tam_medio_ic_tau_test)
+  
+  return(list(
+    cov_ate_train,
+    cov_ate_test
+    ))
+}
+
+coverages_ate_bart_YA <- data.frame(
+  train = numeric(niters),
+  test = numeric(niters)
+)
+
+coverages_ate_bart_YB <- data.frame(
+  train = numeric(niters),
+  test = numeric(niters)
+)
+
+for(i in 1:niters){
+  semilla = seeds[i]
+  YA <- samplear_sup_A(semilla)
+  YB <- samplear_sup_B(semilla)
+  set.seed(semilla)
+  ates_YA <- get_barts_ate(YA,5, 50, 2000, 2, semilla)
+  ates_YB <- get_barts_ate(YB,5, 50, 2000, 2, semilla)
+  coverages_ate_bart_YA[i, ] <- list(train = ates_YA[[1]], test = ates_YA[[2]])
+  coverages_ate_bart_YB[i, ] <- list(train = ates_YB[[1]], test = ates_YB[[2]])
+}
+
+#Sobreescribimos los resultados en los csv de respuesta
+
+res_A <- read.csv('resultados/results_sup_A.csv')
+res_B <- read.csv('resultados/results_sup_B.csv')
+
+res_A[2:(niters+1), 11] <- coverages_ate_bart_YA$train
+res_A[2:(niters+1), 12] <- coverages_ate_bart_YA$test
+res_B[2:(niters+1), 11] <- coverages_ate_bart_YB$train
+res_B[2:(niters+1), 12] <- coverages_ate_bart_YB$test
+#Eliminamoms la ultima fila de NAs
+
+write.csv(res_A[-nrow(res_A), ], "resultados/results_sup_A.csv", row.names = FALSE)
+write.csv(res_B[-nrow(res_B), ], "resultados/results_sup_B.csv", row.names = FALSE)
+```
