@@ -210,25 +210,33 @@ rep_fig1hillizq <- ggplot() +
   geom_line(data = curva_poly_no_tratados, aes(x = X, y = Y),
             linetype = "dotdash", color = "blue", linewidth = 0.8) +
   #Estos puntos los voy a usar para la leyenda
-  geom_point(aes(x = 10, y = 110), shape = 2, size = 5) +  #triangulo
-  geom_point(aes(x = 10, y = 105), shape = 1, size = 5) + #circulo
+  #geom_point(aes(x = 10, y = 110), shape = 2, size = 5) +  #triangulo
+  #geom_point(aes(x = 10, y = 105), shape = 1, size = 5) + #circulo
   # Etiquetas y tema
   #labs(title = "Ajuste de BART y polinomio de grado 3",
   #     x = "X", y = "Y") +
   coord_cartesian(xlim=c(min(confounders_x),max(confounders_x)))+
-  theme_bw() +
-  coord_fixed() +
-  theme(plot.margin = margin(1, 1, 1, 1, "pt")) +
-  #  Leyenda manual
-  annotate("text", x = 10, y = 125, 
-           label = "——  Curvas teóricas", hjust = 0) +
-  annotate("text", x = 10, y = 120, 
-           label = "- - -  Ajuste BART", hjust = 0) +
-  annotate("text", x = 10, y = 115, 
-           label = "-·-·-  Ajuste de polinomio de grado 3", hjust = 0) +
-  annotate("text", x= 25, y = 110, label = "Individuos no tratados") +
-  annotate("text", x=25, y = 105, label = "Individuos tratados")
+  theme_minimal() +
+    theme(
+      axis.text = element_text(size = 14),
+      axis.title = element_text(size = 14),
+      legend.text = element_text(size = 14),
+      legend.title = element_text(size = 14)
+    ) +
 
+  coord_fixed() +
+  theme(plot.margin = margin(1, 1, 1, 1, "pt"))
+  #  Leyenda manual
+  # annotate("text", x = 10, y = 125, 
+  #          label = "——  Curvas teóricas", hjust = 0) +
+  # annotate("text", x = 10, y = 120, 
+  #          label = "- - -  Ajuste BART", hjust = 0) +
+  # annotate("text", x = 10, y = 115, 
+  #          label = "-·-·-  Ajuste de polinomio de grado 3", hjust = 0) +
+  # annotate("text", x= 25, y = 110, label = "Individuos no tratados") +
+  # annotate("text", x=25, y = 105, label = "Individuos tratados")
+
+rep_fig1hillizq
 ggsave("../figuras/resultados_inicial/bart_poly_teo.pdf", units = "in" , plot = (rep_fig1hillizq))
 ```
 
@@ -340,7 +348,13 @@ plot_bart <- ggplot() +
 
   scale_shape_manual(name = "Puntos", values = c("Tratados" = 1, "No tratados" = 2), guide = "none") +
   theme(legend.position = "none") + 
-  theme_minimal() 
+  theme_minimal() +
+    theme(
+      axis.text = element_text(size = 14),
+      axis.title = element_text(size = 14),
+      legend.text = element_text(size = 14),
+      legend.title = element_text(size = 14)
+    )
   #+labs(title = "Modelo BART", x = "X", y = "Valor estimado")
 
 plot_bcf <- ggplot() +
@@ -355,7 +369,13 @@ plot_bcf <- ggplot() +
 
   scale_shape_manual(name = "Puntos", values = c("Tratados" = 1, "No tratados" = 2), guide = "none") +
   theme(legend.position = "none") + 
-  theme_minimal() 
+  theme_minimal() +
+    theme(
+      axis.text = element_text(size = 14),
+      axis.title = element_text(size = 14),
+      legend.text = element_text(size = 14),
+      legend.title = element_text(size = 14)
+    )
   #+labs(title = "Modelo BCF", x = "X", y = "Valor estimado")
 
 plot_cf <- ggplot() +
@@ -369,7 +389,13 @@ plot_cf <- ggplot() +
   geom_line(data = curva_cf_no_tratados, aes(x = X, y = Y), color = "green", linewidth = 1) +
   theme(legend.position = "none") + 
   scale_shape_manual(name = "Puntos", values = c("Tratados" = 1, "No tratados" = 2), guide = "none") +
-  theme_minimal() 
+  theme_minimal() +
+    theme(
+      axis.text = element_text(size = 14),
+      axis.title = element_text(size = 14),
+      legend.text = element_text(size = 14),
+      legend.title = element_text(size = 14)
+    )
   #+labs(title = "Modelo CF", x = "X", y = "Valor estimado")
 
 plot_bart
@@ -379,34 +405,7 @@ ggsave("../figuras/resultados_inicial/ajuste_bcf.pdf", units = "in" , plot = (pl
 plot_cf
 ggsave("../figuras/resultados_inicial/ajuste_cf.pdf", units = "in" , plot = (plot_cf))
 ```
-```{r}
-curva_bcf_tratados_propscore_cf <- data.frame(
-  X = x_grid,
-  Y = rowMeans(bcf_pred_tratados$mu_hat) +((1 - e_hat)*rowMeans(bcf_pred_tratados$tau_hat))
-)
 
-curva_bcf_no_tratados_propscore_cf <- data.frame(
-  X = x_grid,
-  Y = rowMeans(bcf_pred_tratados$mu_hat) - (e_hat * rowMeans(bcf_pred_tratados$tau_hat))
-)
-
-plot_bcf_propscore_cf <- ggplot() +
-  geom_point(data = puntos_tratados, aes(x = X, y = Y, shape = "Tratados"), size = 3, stroke = 1.2) +
-  geom_point(data = puntos_no_tratados, aes(x = X, y = Y, shape = "No tratados"), size = 3, stroke = 1.2) +
-
-  geom_line(data = curva_teorica_tratados, aes(x = X, y = Y), color = "black", linewidth = 0.8) +
-  geom_line(data = curva_teorica_no_tratados, aes(x = X, y = Y), color = "black", linewidth = 0.8) +
-
-  geom_line(data = curva_bcf_tratados_propscore_cf, aes(x = X, y = Y), color = "blue", linewidth = 1) +
-  geom_line(data = curva_bcf_no_tratados_propscore_cf, aes(x = X, y = Y), color = "blue", linewidth = 1) +
-
-  scale_shape_manual(name = "Puntos", values = c("Tratados" = 1, "No tratados" = 2), guide = "none") +
-  theme(legend.position = "none") + 
-  theme_minimal() 
-
-plot_bcf_propscore_cf
-ggsave("../figuras/resultados_inicial/bcf_propscore_cf.pdf", units = "in" , plot = (plot_bcf_propscore_cf))
-```
 
 Para recrear la figura 1 (der.) calculamos el CATT para todos los modelos.
 Para hacer esto con BART necesitamos predecir el contrafactual de los tratados.

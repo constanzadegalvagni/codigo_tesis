@@ -19,6 +19,8 @@ library(ggdensity)
 library(ggdist)
 library(dplyr)
 library(cowplot)
+library(ggridges)
+library(ggbeeswarm)
 ```
 
 Creamos gráficos de ejemplo para ver los valores que toman las medias de las normales que usamos para generar las superficies A y B.
@@ -66,198 +68,100 @@ if (!dir.exists("../figuras/resultados_ihdp")) {
 ```
 
 ```{r}
-df_ate_vs_rmse_train_supA <- data.frame(
-  ate_train = c(res_sup_A$BCF.ate_train, res_sup_A$CF.ate_train, res_sup_A$BART.ate_train),
-  rmse_ate_train = c(res_sup_A$BCF.rmse_ate_train, res_sup_A$CF.rmse_ate_train, res_sup_A$BART.rmse_ate_train),
-  modelo = factor(rep(c("BCF", "CF", "BART"), each = nrow(res_sup_A)))
+df_error_ate_supA <- data.frame(
+  error_ate = c(res_sup_A$BART.error_ate,
+                res_sup_A$BCF.error_ate,
+                res_sup_A$CF.error_ate),
+  modelo = factor(rep(c("BART", "BCF", "CF"), each = nrow(res_sup_A)))
 )
-
-df_ate_vs_rmse_train_supB <- data.frame(
-  ate_train = c(res_sup_B$BCF.ate_train, res_sup_B$CF.ate_train, res_sup_B$BART.ate_train),
-  rmse_ate_train = c(res_sup_B$BCF.rmse_ate_train, res_sup_B$CF.rmse_ate_train, res_sup_B$BART.rmse_ate_train),
-  modelo = factor(rep(c("BCF", "CF", "BART"), each = nrow(res_sup_B)))
+df_error_ate_supB <- data.frame(
+  error_ate = c(res_sup_B$BART.error_ate,
+                res_sup_B$BCF.error_ate,
+                res_sup_B$CF.error_ate),
+  modelo = factor(rep(c("BART", "BCF", "CF"), each = nrow(res_sup_B)))
 )
-
-df_ate_vs_rmse_test_supA <- data.frame(
-  ate_test = c(res_sup_A$BCF.ate_test, res_sup_A$CF.ate_test, res_sup_A$BART.ate_test),
-  rmse_ate_test = c(res_sup_A$BCF.rmse_ate_test, res_sup_A$CF.rmse_ate_test, res_sup_A$BART.rmse_ate_test),
-  modelo = factor(rep(c("BCF", "CF", "BART"), each = nrow(res_sup_A)))
-)
-
-df_ate_vs_rmse_test_supB <- data.frame(
-  ate_test = c(res_sup_B$BCF.ate_test, res_sup_B$CF.ate_test, res_sup_B$BART.ate_test),
-  rmse_ate_test = c(res_sup_B$BCF.rmse_ate_test, res_sup_B$CF.rmse_ate_test, res_sup_B$BART.rmse_ate_test),
-  modelo = factor(rep(c("BCF", "CF", "BART"), each = nrow(res_sup_B)))
-)
-
-ate_train_vs_rmse_sup_A <- ggplot(df_ate_vs_rmse_train_supA, aes(x = ate_train, y = rmse_ate_train)) +
-  geom_density_2d_filled(contour_var = "ndensity") +
-  facet_wrap(~modelo) +
-  guides(fill = "none") +
-  coord_cartesian(ylim = c(NA, quantile(df_ate_vs_rmse_train_supA$rmse_ate_train, 0.975)))+
-  scale_fill_viridis_d(option = "magma") +
-  geom_vline(xintercept = 4, linetype = "dashed", color = "white")+
-  labs(
-    title = expression(ATE[train] ~ "vs RMSE "~ (ATE[train])~" para sup. A"),
-    x = expression(hat(ATE)[train]),
-    y = "RMSE(ATE)"
-  ) +
-  theme_minimal() +
-  theme(
-    axis.title.x = element_text(size = 16),  # Título eje X
-    axis.title.y = element_text(size = 16),  # Título eje Y
-    axis.text.x = element_text(size = 12),   # Números en eje X
-    axis.text.y = element_text(size = 12),
-    plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
-    strip.text = element_text(size = 16)
-  ) 
-
-ate_test_vs_rmse_sup_A <- ggplot(df_ate_vs_rmse_test_supA, aes(x = ate_test, y = rmse_ate_test)) +
-  geom_density_2d_filled(contour_var = "ndensity") +
-  facet_wrap(~modelo) +
-  guides(fill = "none") +
-  coord_cartesian(ylim = c(NA, quantile(df_ate_vs_rmse_test_supA$rmse_ate_test, 0.975))) + 
-  scale_fill_viridis_d(option = "magma") +
-  geom_vline(xintercept = 4, linetype = "dashed", color = "white")+
-  labs(
-    title = expression(ATE[test] ~ "vs RMSE "(ATE[test])~" para sup. A"),
-    x = expression(hat(ATE)[test]),
-    y = "RMSE(ATE)"
-  ) +
-  theme_minimal() +
-  theme(
-    axis.title.x = element_text(size = 16),  # Título eje X
-    axis.title.y = element_text(size = 16),  # Título eje Y
-    axis.text.x = element_text(size = 12),   # Números en eje X
-    axis.text.y = element_text(size = 12),
-    plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
-    strip.text = element_text(size = 16)
-  ) 
-
-ate_train_vs_rmse_sup_A
-ggsave("../figuras/resultados_ihdp/ate_train_vs_rmse_supA.pdf", units = "in", plot = ggdraw(ate_train_vs_rmse_sup_A))
-ate_test_vs_rmse_sup_A
-ggsave("../figuras/resultados_ihdp/ate_test_vs_rmse_supA.pdf", units = "in" , plot = ggdraw(ate_test_vs_rmse_sup_A))
 ```
-```{r warning = FALSE}
-ate_train_vs_rmse_sup_B <- ggplot(df_ate_vs_rmse_train_supB, aes(x = ate_train, y = rmse_ate_train)) +
-  geom_density_2d_filled(contour_var = "ndensity") +
-  geom_point(alpha = 0.3, size = 1, color = "white") + 
-  facet_wrap(~modelo) +
-  guides(fill = "none") +
-  scale_fill_viridis_d(option = "magma") +
-  labs(
-    title = expression(ATE[train] ~ "vs RMSE "~ (ATE[train])~" para sup. B"),
-    x = expression(hat(ate)[train]),
-    y = "RMSE(ATE)"
-  ) +
-  theme_minimal()
-
-ate_test_vs_rmse_sup_B <- ggplot(df_ate_vs_rmse_test_supB, aes(x = ate_test, y = rmse_ate_test)) +
-  geom_density_2d_filled(contour_var = "ndensity") +
-  geom_point(alpha = 0.3, size = 1, color = "white") + 
-  facet_wrap(~modelo) +
-  scale_fill_viridis_d(option = "magma") +
-  labs(
-    title = expression(ATE[test] ~ "vs RMSE "~ (ATE[test])~" para sup. B"),
-    x = expression(hat(ATE)[test]),
-    y = "RMSE(ATE)"
-  ) +
-  theme_minimal()
-
-ate_train_vs_rmse_sup_B
-ggsave("../figuras/resultados_ihdp/ate_train_vs_rmse_supB_original.pdf", units = "in" , plot = ggdraw(ate_train_vs_rmse_sup_B))
-ate_test_vs_rmse_sup_B
-ggsave("../figuras/resultados_ihdp/ate_test_vs_rmse_supB_original.pdf", units = "in" , plot = ggdraw(ate_test_vs_rmse_sup_B + guides(fill = "none")))
-```
-
 ```{r}
-ymax_rmse_ate_B = max(quantile(df_ate_vs_rmse_train_supB$ate_train,0.9), quantile(df_ate_vs_rmse_test_supB$ate_test,0.9))
-xmin_rmse_ate_B = max(quantile(df_ate_vs_rmse_train_supB$ate_train, 0.05), quantile(df_ate_vs_rmse_test_supB$ate_test, 0.05))
-xmax_rmse_ate_B = max(quantile(df_ate_vs_rmse_train_supB$ate_train, 0.95), quantile(df_ate_vs_rmse_test_supB$ate_test, 0.95))
+boxplot_error_supA <- ggplot(df_error_ate_supA, aes(x = modelo, y = error_ate, color = modelo)) +
 
-ate_train_vs_rmse_sup_B <- ggplot(df_ate_vs_rmse_train_supB, aes(x = ate_train, y = rmse_ate_train)) +
-  geom_density_2d_filled(contour_var = "ndensity") +
-  facet_wrap(~modelo) +
-  guides(fill = "none") +
-  coord_cartesian(ylim = c(NA, ymax_rmse_ate_B), 
-                xlim = c(xmin_rmse_ate_B,xmax_rmse_ate_B)) +  
-  scale_fill_viridis_d(option = "magma") +
-  geom_vline(xintercept = 4, linetype = "dashed", color = "white")+
+  geom_quasirandom(width = 0.3, alpha = 0.4) +
+    geom_boxplot(outlier.shape = NA, alpha = 0, color = "black") +
+  theme_minimal()+
+    guides(fill = "none") +
   labs(
-    title = expression(ATE[train] ~ "vs RMSE "~ (ATE[train])~" para sup. B"),
-    x = expression(hat(ATE)[train]),
-    y = "RMSE(ATE)"
+    title = expression("Error " * widehat(ATE) * " para superficies de tipo A"),
+    x = "Modelo",
+    y = expression("Error " * widehat(ATE))
   ) +
-  theme_minimal() +
-  theme(
-    axis.title.x = element_text(size = 16),  # Título eje X
-    axis.title.y = element_text(size = 16),  # Título eje Y
-    axis.text.x = element_text(size = 12),   # Números en eje X
-    axis.text.y = element_text(size = 12),
-    plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
-    strip.text = element_text(size = 16)
-  ) 
+theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
 
-ate_test_vs_rmse_sup_B <- ggplot(df_ate_vs_rmse_test_supB, aes(x = ate_test, y = rmse_ate_test)) +
-  geom_density_2d_filled(contour_var = "ndensity") +
-  facet_wrap(~modelo) +
-  coord_cartesian(ylim = c(NA, ymax_rmse_ate_B), 
-                xlim = c(xmin_rmse_ate_B,xmax_rmse_ate_B)) + 
-  geom_vline(xintercept = 4, linetype = "dashed", color = "white")+
-  scale_fill_viridis_d(option = "magma", name = NULL) +
+
+boxplot_error_supB <- ggplot(df_error_ate_supB, aes(x = modelo, y = error_ate, color = modelo)) +
+
+  geom_quasirandom(width = 0.3, alpha = 0.4) +
+    geom_boxplot(outlier.shape = NA, alpha = 0, color = "black") +
+  coord_cartesian(ylim = c(NA, 0.7)) +
+  theme_minimal()+
+    guides(fill = "none") +
   labs(
-    title = expression(ATE[test] ~ "vs RMSE "~ (ATE[test])~" para sup. B"),
-    x = expression(hat(ATE)[test]),
-    y = "RMSE(ATE)"
+    title = expression("Error " * widehat(ATE) * " para superficies de tipo B"),
+    x = "Modelo",
+    y = expression("Error " * widehat(ATE))
   ) +
-  theme(legend.position = "bottom") +
-  guides(fill = guide_legend(direction = "horizontal", title.position = "top", title.hjust = 0.5)) +
-  theme_minimal() +
-  theme(
-    axis.title.x = element_text(size = 16),  # Título eje X
-    axis.title.y = element_text(size = 16),  # Título eje Y
-    axis.text.x = element_text(size = 12),   # Números en eje X
-    axis.text.y = element_text(size = 12),
-    plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
-    strip.text = element_text(size = 16)
-  ) 
+theme_minimal(base_size = 12) +
+  theme(legend.position = "none")
 
-legend_ates <- get_legend(ate_test_vs_rmse_sup_B)
-ggsave("../figuras/resultados_ihdp/leyenda_rmse_vs_tau.pdf", units = "in" , plot = ggdraw(legend_ates), width = 6, height = 1.5)
 
-ate_train_vs_rmse_sup_B
-ggsave("../figuras/resultados_ihdp/ate_train_vs_rmse_supB.pdf", units = "in" , plot = ggdraw(ate_train_vs_rmse_sup_B))
-ate_test_vs_rmse_sup_B + guides(fill = "none")
-ggsave("../figuras/resultados_ihdp/ate_test_vs_rmse_supB.pdf", units = "in" , plot = ggdraw(ate_test_vs_rmse_sup_B + guides(fill = "none")))
+boxplot_error_supA
+boxplot_error_supB
+
+ggsave("../figuras/resultados_ihdp/error_atehat_supA.pdf", units = "in" , plot = ggdraw(boxplot_error_supA))
+ggsave("../figuras/resultados_ihdp/error_atehat_supB.pdf", units = "in", plot = ggdraw(boxplot_error_supB))
 ```
+
 ```{r}
 df_cate_rmse_supA <- data.frame(
   rmse = c(
     res_sup_A$BCF.rmse_cate_train, res_sup_A$CF.rmse_cate_train, res_sup_A$BART.rmse_cate_train,
     res_sup_A$BCF.rmse_cate_test,  res_sup_A$CF.rmse_cate_test,  res_sup_A$BART.rmse_cate_test
   ),
-  modelo = factor(rep(c("BCF", "CF", "BART"), each = 2 * nrow(res_sup_A))),
-  split = factor(rep(c("train", "test"), each = nrow(res_sup_A), times = 3))
+  modelo = factor(rep(c("BCF", "CF", "BART", "BCF", "CF", "BART"), each = nrow(res_sup_A))),
+  split  = factor(rep(c("train", "train", "train", "test", "test", "test"), each = nrow(res_sup_A)))
 )
 
 plot_rmse_cate_supA <- ggplot(df_cate_rmse_supA, aes(x = modelo, y = rmse, fill = split)) +
-  geom_boxplot(position = position_dodge(width = 0.8), alpha = 0.7) +
-  labs(
-    title = "Comparación de RMSE(CATE) entre Train y Test - Sup. A",
-    x = "Modelo",
-    y = "RMSE(CATE)",
-    fill = "Split"
+  # boxplots separados para train y test
+
+  # puntos distribuidos sin amontonarse
+  geom_quasirandom(
+    aes(color = split, group = interaction(modelo, split)),
+    dodge.width = 0.8,
+    size = 0.8,
+    alpha = 0.5,
+    shape = 1
   ) +
-  scale_fill_viridis_d(option = "plasma") +
-  theme_minimal()+
-     theme(
-    axis.title = element_text(size = 16),
-    axis.text = element_text(size = 14),
-    plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
-    legend.title = element_text(size = 14),
-    legend.text = element_text(size = 13)
-  )
+    geom_boxplot(
+    aes(group = interaction(modelo, split)), 
+    width = 0.3,
+    position = position_dodge(width = 0.8),
+    outlier.shape = NA,
+    color = "black",
+    fill = NA
+  ) +
+  labs(
+    title = "RMSE(ITE) - Sup. A",
+    x = "Modelo",
+    y = "RMSE(ITE)",
+    fill = "Conjunto",
+    color = "Conjunto"
+  ) +
+scale_fill_manual(   values = c("test" = "#1F7835",              "train" = "#762A83"),   name = "Conjunto" )+
+scale_color_manual(   values = c("test" = "#1F7835",              "train" = "#762A83"),   name = "Conjunto" ) +
+    guides(color = guide_legend(
+    override.aes=list(shape = 16, cex = 3))) +
+  theme_minimal(base_size = 12)
+
 plot_rmse_cate_supA
 ggsave("../figuras/resultados_ihdp/rmse_cate_supA.pdf", units = "in" , plot = ggdraw(plot_rmse_cate_supA))
 ```
@@ -267,248 +171,160 @@ df_cate_rmse_supB <- data.frame(
     res_sup_B$BCF.rmse_cate_train, res_sup_B$CF.rmse_cate_train, res_sup_B$BART.rmse_cate_train,
     res_sup_B$BCF.rmse_cate_test,  res_sup_B$CF.rmse_cate_test,  res_sup_B$BART.rmse_cate_test
   ),
-  modelo = factor(rep(c("BCF", "CF", "BART"), each = 2 * nrow(res_sup_B))),
-  split = factor(rep(c("train", "test"), each = nrow(res_sup_B), times = 3))
+  modelo = factor(rep(c("BCF", "CF", "BART", "BCF", "CF", "BART"), each = nrow(res_sup_B))),
+  split  = factor(rep(c("train", "train", "train", "test", "test", "test"), each = nrow(res_sup_B)))
 )
 
-rmse_cate_supB_outliers <- ggplot(df_cate_rmse_supB, aes(x = modelo, y = rmse, fill = split)) +
-  geom_boxplot(position = position_dodge(width = 0.8), alpha = 0.7) +
-  labs(
-    title = "Comparación de RMSE(CATE) entre Train y Test - Sup. B",
-    x = "Modelo",
-    y = "RMSE(CATE)",
-    fill = "Split"
+library(ggplot2)
+library(ggbeeswarm)  # para geom_quasirandom
+
+plot_rmse_cate_supB <- ggplot(df_cate_rmse_supB, aes(x = modelo, y = rmse, fill = split)) +
+  # boxplots separados para train y test
+
+  # puntos distribuidos sin amontonarse
+  geom_quasirandom(
+    aes(color = split, group = interaction(modelo, split)),
+    dodge.width = 0.8,
+    size = 0.8,
+    alpha = 0.4,
+    shape = 1
   ) +
-  scale_fill_viridis_d(option = "plasma") +
-  theme_minimal()+
-   theme(
-    axis.title = element_text(size = 16),
-    axis.text = element_text(size = 14),
-    plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
-    legend.title = element_text(size = 14),
-    legend.text = element_text(size = 13)
-  )
-rmse_cate_supB_outliers
-ggsave("../figuras/resultados_ihdp/rmse_cate_supB_outliers.pdf", units = "in" , plot = ggdraw(rmse_cate_supB_outliers))
-```
-```{r}
-ymax_boxplots_cate_B <- max(quantile(df_cate_rmse_supB$rmse, 0.95))
-
-rmse_cate_supB <- ggplot(df_cate_rmse_supB, aes(x = modelo, y = rmse, fill = split)) +
-  coord_cartesian(ylim = c(NA,quantile(df_cate_rmse_supB$rmse, 0.95))) +
-  geom_boxplot(position = position_dodge(width = 0.8), alpha = 0.7) +
-  labs(
-    title = "Comparación de RMSE(CATE) entre Train y Test - Sup. B",
-    x = "Modelo",
-    y = "RMSE(CATE)",
-    fill = "Split"
+    geom_boxplot(
+    aes(group = interaction(modelo, split)), 
+    width = 0.3,
+    position = position_dodge(width = 0.8),
+    outlier.shape = NA,
+    color = "black",
+    fill=NA
   ) +
-  scale_fill_viridis_d(option = "plasma") +
-  theme_minimal() +
-   theme(
-    axis.title = element_text(size = 16),
-    axis.text = element_text(size = 14),
-    plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
-    legend.title = element_text(size = 14),
-    legend.text = element_text(size = 13)
-  )
-rmse_cate_supB
-ggsave("../figuras/resultados_ihdp/rmse_cate_supB.pdf", units = "in" , plot = ggdraw(rmse_cate_supB))
-```
-```{r}
-df_rmse_cate_su <- data.frame(
-  valor = c(
-    res_sup_A$BART.tam_medio_ic_train,
-    res_sup_A$BCF.tam_medio_ic_train,
-    res_sup_A$CF.tam_medio_ic_train,
-    res_sup_A$BART.tam_medio_ic_test,
-    res_sup_A$BCF.tam_medio_ic_test,
-    res_sup_A$CF.tam_medio_ic_test
-  ),
-  modelo = rep(c("BART", "BCF", "CF"), each = 500 * 2),
-  conjunto = rep(c("train", "test"), each = 500, times = 3)
-)
+  labs(
+    title = "RMSE(ITE) - Sup. B",
+    x = "Modelo",
+    y = "RMSE(ITE)",
+    fill = "Conjunto",
+    color = "Conjunto"
+  ) +
+scale_fill_manual(   values = c("test" = "#1F7835",              "train" = "#762A83"),   name = "Conjunto" )+
+scale_color_manual(   values = c("test" = "#1F7835",              "train" = "#762A83"),   name = "Conjunto" ) +
+    guides(color = guide_legend(
+    override.aes=list(shape = 16, cex = 3))) +
+  theme_minimal(base_size = 12)
 
-df_tam_ic_supB <- data.frame(
-  valor = c(
-    res_sup_B$BART.tam_medio_ic_train,
-    res_sup_B$BCF.tam_medio_ic_train,
-    res_sup_B$CF.tam_medio_ic_train,
-    res_sup_B$BART.tam_medio_ic_test,
-    res_sup_B$BCF.tam_medio_ic_test,
-    res_sup_B$CF.tam_medio_ic_test
-  ),
-  modelo = rep(c("BART", "BCF", "CF"), each = 500 * 2),
-  conjunto = rep(c("train", "test"), each = 500, times = 3)
-)
+plot_rmse_cate_supB
+ggsave("../figuras/resultados_ihdp/rmse_cate_supB.pdf", units = "in" , plot = ggdraw(plot_rmse_cate_supB))
+
 ```
 
 ```{r}
+min(df_cate_rmse_supB$rmse)
+min(df_cate_rmse_supA$rmse)
+```
+
+```{r}
+len_datos <- dim(res_sup_A)[1]
+```
+
+```{r}
+
 df_tam_ic_supA <- data.frame(
   valor = c(
-    res_sup_A$BART.tam_medio_ic_train,
-    res_sup_A$BCF.tam_medio_ic_train,
-    res_sup_A$CF.tam_medio_ic_train,
-    res_sup_A$BART.tam_medio_ic_test,
-    res_sup_A$BCF.tam_medio_ic_test,
-    res_sup_A$CF.tam_medio_ic_test
+    res_sup_A$BART.tam_medio_ic_cate_train,
+    res_sup_A$BCF.tam_medio_ic_cate_train,
+    res_sup_A$CF.tam_medio_ic_cate_train,
+    res_sup_A$BART.tam_medio_ic_cate_test,
+    res_sup_A$BCF.tam_medio_ic_cate_test,
+    res_sup_A$CF.tam_medio_ic_cate_test
   ),
-  modelo = rep(c("BART", "BCF", "CF"), each = 500 * 2),
-  conjunto = rep(c("train", "test"), each = 500, times = 3)
+  modelo = rep(c("BART", "BCF", "CF", "BART", "BCF", "CF"), each = len_datos),
+  conjunto = rep(c("train", "train", "train", "test", "test", "test"), each = len_datos)
 )
 
 df_tam_ic_supB <- data.frame(
   valor = c(
-    res_sup_B$BART.tam_medio_ic_train,
-    res_sup_B$BCF.tam_medio_ic_train,
-    res_sup_B$CF.tam_medio_ic_train,
-    res_sup_B$BART.tam_medio_ic_test,
-    res_sup_B$BCF.tam_medio_ic_test,
-    res_sup_B$CF.tam_medio_ic_test
+    res_sup_B$BART.tam_medio_ic_cate_train,
+    res_sup_B$BCF.tam_medio_ic_cate_train,
+    res_sup_B$CF.tam_medio_ic_cate_train,
+    res_sup_B$BART.tam_medio_ic_cate_test,
+    res_sup_B$BCF.tam_medio_ic_cate_test,
+    res_sup_B$CF.tam_medio_ic_cate_test
   ),
-  modelo = rep(c("BART", "BCF", "CF"), each = 500 * 2),
-  conjunto = rep(c("train", "test"), each = 500, times = 3)
+  modelo = rep(c("BART", "BCF", "CF", "BART", "BCF", "CF"), each = len_datos),
+  conjunto = rep(c("train", "train", "train", "test", "test", "test"), each = len_datos)
 )
-
-
-library(ggridges)
-library(forcats)
 
 
 tam_ics_supA <- ggplot(df_tam_ic_supA, aes(x = modelo, y = valor, fill = conjunto)) +
-  geom_violin(alpha = 0.4, color = NA, position = position_dodge(width = 0.9), scale = "width") +
-  geom_jitter(position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.9),
-              size = 0.8, alpha = 0.4, shape = 21, stroke = 0.2, color = "black") +
-  labs(
-    x = "Modelo",
-    y = "Tamaño medio del intervalo de confianza del ATE",
-    fill = "Conjunto"
+  # boxplots separados para train y test
+
+  # puntos distribuidos sin amontonarse
+  geom_quasirandom(
+    aes(color = conjunto, group = interaction(modelo, conjunto)),
+    dodge.width = 0.8,
+    size = 0.8,
+    alpha = 0.4,
+    shape = 1
   ) +
-  scale_fill_viridis_d(option = "plasma") +
-  theme_minimal(base_size = 14) +
-  theme(
-    axis.text = element_text(size = 12),
-    axis.title = element_text(size = 14)
-  )
+    geom_boxplot(
+    aes(group = interaction(modelo, conjunto)), 
+    width = 0.3,
+    position = position_dodge(width = 0.8),
+    outlier.shape = NA,
+    color = "black",
+    fill = NA
+  ) +
+  labs(
+    title = "Tamaño medio ICs - Sup.A",
+    x = "Modelo",
+    y = "Tamaño IC",
+    fill = "Conjunto",
+    color = "Conjunto"
+  ) +
+scale_fill_manual(   values = c("test" = "#1F7835",              "train" = "#762A83"),   name = "Conjunto" )+
+scale_color_manual(   values = c("test" = "#1F7835",              "train" = "#762A83"),   name = "Conjunto" ) +
+    guides(color = guide_legend(
+    override.aes=list(shape = 16, cex = 3))) +
+  theme_minimal(base_size = 12)
+
 
 tam_ics_supB <- ggplot(df_tam_ic_supB, aes(x = modelo, y = valor, fill = conjunto)) +
-  geom_violin(alpha = 0.4, color = NA, position = position_dodge(width = 0.9), scale = "width") +
-  geom_jitter(position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.9),
-              size = 0.8, alpha = 0.4, shape = 21, stroke = 0.2, color = "black") +
-  labs(
-    x = "Modelo",
-    y = "Tamaño medio del intervalo de confianza del ATE",
-    fill = "Conjunto"
-  ) +
-  scale_fill_viridis_d(option = "plasma", name = "Conjunto", guide = guide_legend()) +
-  theme_minimal(base_size = 14) +
-  theme(
-    axis.text = element_text(size = 12),
-    axis.title = element_text(size = 14)
-  )
+  # boxplots separados para train y test
 
-tam_ics_supB_sinoutliers <- ggplot(df_tam_ic_supB, aes(x = modelo, y = valor, fill = conjunto)) +
-  geom_violin(alpha = 0.4, color = NA, position = position_dodge(width = 0.9), scale = "width") +
-  geom_jitter(position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.9),
-              size = 0.8, alpha = 0.4, shape = 21, stroke = 0.2, color = "black") +
-  coord_cartesian(ylim = c(NA, quantile(df_tam_ic_supB$valor, 0.95))) +
-  labs(
-    x = "Modelo",
-    y = "Tamaño medio del intervalo de confianza del ATE",
-    fill = "Conjunto"
+  # puntos distribuidos sin amontonarse
+  geom_quasirandom(
+    aes(color = conjunto, group = interaction(modelo, conjunto)),
+    dodge.width = 0.8,
+    size = 0.8,
+    alpha = 0.4,
+    shape = 1
   ) +
-  scale_fill_viridis_d(option = "plasma", name = "Conjunto", guide = guide_legend()) +
-  theme_minimal(base_size = 14) +
-  theme(
-    axis.text = element_text(size = 12),
-    axis.title = element_text(size = 14)
-  )
-
+    geom_boxplot(
+    aes(group = interaction(modelo, conjunto)), 
+    width = 0.3,
+    position = position_dodge(width = 0.8),
+    outlier.shape = NA,
+    color = "black",
+    fill = NA
+  ) +
+  labs(
+    title = "Tamaño medio ICs - Sup. B",
+    x = "Modelo",
+    y = "Tamaño IC",
+    fill = "Conjunto",
+    color = "Conjunto"
+  ) +
+scale_fill_manual(   values = c("test" = "#1F7835",              "train" = "#762A83"),   name = "Conjunto" )+
+scale_color_manual(   values = c("test" = "#1F7835",              "train" = "#762A83"),   name = "Conjunto" ) +
+    guides(color = guide_legend(
+    override.aes=list(shape = 16, cex = 3))) +
+  theme_minimal(base_size = 12)
 
 tam_ics_supA
 ggsave("../figuras/resultados_ihdp/tam_ics_supA.pdf", units = "in" , plot = ggdraw(tam_ics_supA))
 tam_ics_supB
 ggsave("../figuras/resultados_ihdp/tam_ics_supB.pdf", units = "in" , plot = ggdraw(tam_ics_supB))
-tam_ics_supB_sinoutliers
-ggsave("../figuras/resultados_ihdp/tam_ics_supB_sinoutliers.pdf", units = "in" , plot = ggdraw(tam_ics_supB_sinoutliers))
 
 ```
-```{r}
-df_cov_ate_supA <- data.frame(
-  coverage = c(
-    res_sup_A$BART.coverage_ate_train,
-    res_sup_A$BART.coverage_ate_test,
-    res_sup_A$BCF.coverage_ate_train,
-    res_sup_A$BCF.coverage_ate_test,
-    res_sup_A$CF.coverage_ate_train,
-    res_sup_A$CF.coverage_ate_test
-  ),
-  modelo = factor(rep(c("BART", "BART", "BCF", "BCF", "CF", "CF"),
-                      each = nrow(res_sup_A))),
-  conjunto = rep(c("train", "test"), times = 3 * nrow(res_sup_A) / 2)
-)
 
-df_cov_ate_supB <- data.frame(
-  coverage = c(
-    res_sup_B$BART.coverage_ate_train,
-    res_sup_B$BART.coverage_ate_test,
-    res_sup_B$BCF.coverage_ate_train,
-    res_sup_B$BCF.coverage_ate_test,
-    res_sup_B$CF.coverage_ate_train,
-    res_sup_B$CF.coverage_ate_test
-  ),
-  modelo = factor(rep(c("BART", "BART", "BCF", "BCF", "CF", "CF"),
-                      each = nrow(res_sup_B))),
-  conjunto = rep(c("train", "test"), times = 3 * nrow(res_sup_B) / 2)
-)
-library(ggbeeswarm)
-
-cov_ate_sup_A <- ggplot(df_cov_ate_supA, aes(x = modelo, y = coverage, fill = conjunto)) +
-  geom_violin(position = position_dodge(width = 0.9), alpha = 0.4, width = 0.9, color = NA) +
-  geom_jitter(position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.9),
-              size = 0.8, alpha = 0.4, shape = 21, stroke = 0.2, color = "black") +
-  scale_fill_viridis_d(option = "plasma") +
-  scale_color_viridis_d(option = "plasma") +
-  labs(
-    title = "Coverage del ATE - Sup. A",
-    x = "Modelo",
-    y = "Coverage",
-    fill = "Conjunto"
-  ) +
-  theme_minimal(base_size = 14) +
-  theme(
-    legend.position = "bottom",
-    axis.text = element_text(size = 12),
-    axis.title = element_text(size = 14)
-  ) +
-  guides(fill = guide_legend(direction = "horizontal", title.position = "top", title.hjust = 0.5))
-
-cov_ate_sup_B <- ggplot(df_cov_ate_supB, aes(x = modelo, y = coverage, fill = conjunto)) +
-  geom_violin(position = position_dodge(width = 0.9), alpha = 0.4, width = 0.9, color = NA) +
-  geom_jitter(position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.9),
-              size = 0.8, alpha = 0.4, shape = 21, stroke = 0.2, color = "black") +
-  scale_fill_viridis_d(option = "plasma") +
-  scale_color_viridis_d(option = "plasma") +
-  labs(
-    title = "Coverage del ATE - Sup. B",
-    x = "Modelo",
-    y = "Coverage",
-    fill = "Conjunto"
-  ) +
-  theme_minimal(base_size = 14) +
-  theme(
-    legend.position = "bottom",
-    axis.text = element_text(size = 12),
-    axis.title = element_text(size = 14)
-  ) +
-  guides(fill = guide_legend(direction = "horizontal", title.position = "top", title.hjust = 0.5))
-
-cov_ate_sup_A
-cov_ate_sup_B
-
-ggsave("../figuras/resultados_ihdp/cov_ate_supA.pdf", units = "in" , plot = ggdraw(cov_ate_sup_A))
-ggsave("../figuras/resultados_ihdp/cov_ate_supB.pdf", units = "in" , plot = ggdraw(cov_ate_sup_B))
-```
 ```{r}
 df_cov_cate_supA <- data.frame(
   coverage = c(
@@ -521,14 +337,9 @@ df_cov_cate_supA <- data.frame(
   ),
   modelo = factor(rep(c("BART", "BART", "BCF", "BCF", "CF", "CF"),
                       each = nrow(res_sup_A))),
-  conjunto = rep(c("train", "test"), times = 3 * nrow(res_sup_A) / 2)
+  conjunto = factor(rep(c("train", "test", "train", "test", "train", "test"),
+                        each = nrow(res_sup_A)))
 )
-
-
-na_labels_cate_supA <- df_cov_cate_supA %>%
-  group_by(modelo, conjunto) %>%
-  summarise(prop_na = mean(is.na(coverage)), .groups = "drop") %>%
-  mutate(label = paste0("NA: ", round(prop_na * 100, 1), "%"))
 
 df_cov_cate_supB <- data.frame(
   coverage = c(
@@ -541,63 +352,77 @@ df_cov_cate_supB <- data.frame(
   ),
   modelo = factor(rep(c("BART", "BART", "BCF", "BCF", "CF", "CF"),
                       each = nrow(res_sup_B))),
-  conjunto = rep(c("train", "test"), times = 3 * nrow(res_sup_B) / 2)
+  conjunto = factor(rep(c("train", "test", "train", "test", "train", "test"),
+                        each = nrow(res_sup_B)))
 )
-na_labels_cate_supB <- df_cov_cate_supB %>%
-  group_by(modelo, conjunto) %>%
-  summarise(prop_na = mean(is.na(coverage)), .groups = "drop") %>%
-  mutate(label = paste0("NA: ", round(prop_na * 100, 1), "%"))
-library(ggbeeswarm)
+
 
 cov_cate_supA <- ggplot(df_cov_cate_supA, aes(x = modelo, y = coverage, fill = conjunto)) +
-  geom_violin(position = position_dodge(width = 0.9), alpha = 0.4, width = 0.9, color = NA) +
-  geom_jitter(position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.9),
-              size = 0.8, alpha = 0.4, shape = 21, stroke = 0.2, color = "black") +
-  coord_cartesian(ylim=c(0,1.1)) +
-  scale_fill_viridis_d(option = "plasma") +
-  scale_color_viridis_d(option = "plasma") +
+  # boxplots separados para train y test
+
+  # puntos distribuidos sin amontonarse
+  geom_quasirandom(
+    aes(color = conjunto, group = interaction(modelo, conjunto)),
+    dodge.width = 0.8,
+    size = 0.8,
+    alpha = 0.4,
+    shape = 1
+  ) +
+    geom_boxplot(
+    aes(group = interaction(modelo, conjunto)), 
+    width = 0.3,
+    position = position_dodge(width = 0.8),
+    outlier.shape = NA,
+    color = "black",
+    fill = NA
+  ) +
+    geom_hline(yintercept = 0.95, linetype = "dashed", color = "orange", linewidth = 0.6) +  # línea en y=0.95
   labs(
-    title = "Coverage del CATE - Sup. A",
+    title = "Coverage ITE - Sup. A",
     x = "Modelo",
-    y = "Coverage",
-    fill = "Conjunto"
+    y = "Tamaño IC",
+    fill = "Conjunto",
+    color = "Conjunto"
   ) +
-  theme_minimal(base_size = 14) +
-  theme(
-    legend.position = "bottom",
-    axis.text = element_text(size = 12),
-    axis.title = element_text(size = 14)
-  ) +
-  geom_text(data = na_labels_cate_supA, 
-            aes(x = modelo, y = 1.05, group = conjunto, label = label), 
-            position = position_dodge(width = 0.9), 
-            size = 3.5, vjust = 0) +
-  guides(fill = guide_legend(direction = "horizontal", title.position = "top", title.hjust = 0.5))
+scale_fill_manual(   values = c("test" = "#1F7835",              "train" = "#762A83"),   name = "Conjunto" )+
+scale_color_manual(   values = c("test" = "#1F7835",              "train" = "#762A83"),   name = "Conjunto" ) +
+    guides(color = guide_legend(
+    override.aes=list(shape = 16, cex = 3))) +
+  theme_minimal(base_size = 12)
 
 
 cov_cate_supB <- ggplot(df_cov_cate_supB, aes(x = modelo, y = coverage, fill = conjunto)) +
-  geom_violin(position = position_dodge(width = 0.9), alpha = 0.4, width = 0.9, color = NA) +
-  geom_jitter(position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.9),
-              size = 0.8, alpha = 0.4, shape = 21, stroke = 0.2, color = "black") +
-  scale_fill_viridis_d(option = "plasma") +
-  scale_color_viridis_d(option = "plasma") +
+  # boxplots separados para train y test
+
+  # puntos distribuidos sin amontonarse
+  geom_quasirandom(
+    aes(color = conjunto, group = interaction(modelo, conjunto)),
+    dodge.width = 0.8,
+    size = 0.8,
+    alpha = 0.4,
+    shape = 1
+  ) +
+    geom_boxplot(
+    aes(group = interaction(modelo, conjunto)), 
+    width = 0.3,
+    position = position_dodge(width = 0.8),
+    outlier.shape = NA,
+    color = "black",
+    fill = NA
+  ) +
+    geom_hline(yintercept = 0.95, linetype = "dashed", color = "orange", linewidth = 0.6) +  # línea en y=0.95
   labs(
-    title = "Coverage del CATE - Sup. B",
+    title = "Coverage ITE - Sup. B",
     x = "Modelo",
-    y = "Coverage",
-    fill = "Conjunto"
+    y = "Tamaño IC",
+    fill = "Conjunto",
+    color = "Conjunto"
   ) +
-  theme_minimal(base_size = 14) +
-  theme(
-    legend.position = "bottom",
-    axis.text = element_text(size = 12),
-    axis.title = element_text(size = 14)
-  ) +
-  geom_text(data = na_labels_cate_supB, 
-            aes(x = modelo, y = 1.05, group = conjunto, label = label), 
-            position = position_dodge(width = 0.9), 
-            size = 3.5, vjust = 0) +
-  guides(fill = guide_legend(direction = "horizontal", title.position = "top", title.hjust = 0.5))
+scale_fill_manual(   values = c("test" = "#1F7835",              "train" = "#762A83"),   name = "Conjunto" )+
+scale_color_manual(   values = c("test" = "#1F7835",              "train" = "#762A83"),   name = "Conjunto" ) +
+    guides(color = guide_legend(
+    override.aes=list(shape = 16, cex = 3))) +
+  theme_minimal(base_size = 12)
 
 cov_cate_supA
 cov_cate_supB
@@ -607,123 +432,205 @@ ggsave("../figuras/resultados_ihdp/cov_cate_supB.pdf", units = "in" , plot = ggd
 ```
 
 ```{r}
-data_gelman_supA <- data.frame(
-  dataset = rep(1:500, times = 2),
-  conjunto = rep(c("Train", "Test"), each = 500),
-  gelman = c(res_sup_A$BART.gelman_train, res_sup_A$BART.gelman_test)
+data_gelman <- data.frame(
+  dataset = rep(1:len_datos, times = 2),
+  superficie = rep(c("Superficies A", "Superficies B"), each = len_datos),
+  gelman = c(res_sup_A$BART.gelman, res_sup_B$BART.gelman)
 )
-
-data_gelman_supB <- data.frame(
-  dataset = rep(1:500, times = 2),
-  conjunto = rep(c("Train", "Test"), each = 500),
-  gelman = c(res_sup_B$BART.gelman_train, res_sup_B$BART.gelman_test)
-)
-
-data_gelman_supA$superficie <- "sup.A"
-data_gelman_supB$superficie <- "sup.B"
-
-data_gelman_total <- rbind(data_gelman_supA, data_gelman_supB)
-data_gelman_total$grupo <- interaction(data_gelman_total$conjunto, data_gelman_total$superficie, sep = "_")
 
 colores <- c(
-  "Train_sup.A" = "#FFD700",    
-  "Test_sup.A" = "#9370DB",     
-  "Train_sup.B" = "#00C853",    
-  "Test_sup.B" = "#FF4081"     
+  "Superficies A" = "#FF4081",    
+  "Superficies B" = "orange"     
 )
 
-gelman_bart <- ggplot(data_gelman_total, aes(x = gelman, fill = grupo, color = grupo)) +
-  geom_density(alpha = 0.2, linewidth = 0.8) +
-  scale_fill_manual(values = colores) +
-  scale_color_manual(values = colores) +
-  #geom_vline(xintercept = 1.5, linetype = "solid", color = "black") +
-  labs(
-    #title = "Distribución del estadístico Gelman-Rubin por conjunto y superficie",
-    x = "Gelman-Rubin R̂",
-    y = "Densidad",
-    color = "Conjunto y superficie",
-    fill = "Conjunto y superficie"
+
+gelman_bart <- ggplot(data_gelman, aes(x = superficie, y = gelman, fill = superficie, color = superficie)) +
+  # boxplots separados para train y test
+
+  # puntos distribuidos sin amontonarse
+  geom_quasirandom(
+    aes(color = superficie),
+    dodge.width = 0.8,
+    size = 0.8,
+    alpha = 1,
+    shape = 1
   ) +
-  geom_vline(xintercept = 1.1, color = "blue", size = 0.8, linetype = "dashed")+
-  theme_minimal(base_size = 14)+
-  theme(legend.position = c(0.6, 0.6))
+    geom_boxplot(
+    aes(group = superficie), 
+    width = 0.3,
+    position = position_dodge(width = 0.8),
+    outlier.shape = NA,
+    color = "black",
+    fill = NA
+  ) +
+  labs(
+    title = "Métrica de Gelman-Rubin para BART",
+    x = "Superficie",
+    y = "Diagnóstico de Gelman-Rubin",
+    fill = "Superficie",
+    color = "Superficie"
+  ) +
+scale_fill_manual(   values = colores,   name = "Superficie" )+
+scale_color_manual(   values = colores,   name = "Superficie" ) +
+    guides(color = guide_legend(
+    override.aes=list(shape = 16, cex = 3))) +
+  theme_minimal(base_size = 12)+
+  labs(x = NULL) +          # quita el título del eje x
+  theme(legend.position = "none")   # elimina la leyenda
 gelman_bart
 ggsave("../figuras/resultados_ihdp/gelman_bart.pdf", units = "in" , plot = ggdraw(gelman_bart))
 ```
 
 ```{r}
-data_autocorr_supA <- data.frame(
-  dataset = rep(1:500, times = 2),
-  conjunto = rep(c("Train", "Test"), each = 500),
-  autocorr = c(res_sup_A$BCF.autocorr_train, res_sup_A$BCF.autocorr_test)
+data_autocorr <- data.frame(
+  dataset = rep(1:len_datos, times = 2),
+  superficie = rep(c("Superficies A", "Superficies B"), each = len_datos),
+  autocorr = c(res_sup_A$BCF.autocorr, res_sup_B$BCF.autocorr)
 )
-
-data_autocorr_supB <- data.frame(
-  dataset = rep(1:500, times = 2),
-  conjunto = rep(c("Train", "Test"), each = 500),
-  autocorr = c(res_sup_B$BCF.autocorr_train, res_sup_B$BCF.autocorr_test)
-)
-
-data_autocorr_supA$superficie <- "sup.A"
-data_autocorr_supB$superficie <- "sup.B"
-
-data_autocorr_total <- rbind(data_autocorr_supA, data_autocorr_supB)
-data_autocorr_total$grupo <- interaction(data_autocorr_total$conjunto, data_autocorr_total$superficie, sep = "_")
-
 colores <- c(
-  "Train_sup.A" = "#FFD700",    
-  "Test_sup.A" = "#9370DB",     
-  "Train_sup.B" = "#00C853",    
-  "Test_sup.B" = "#FF4081"     
+  "Superficies A" = "#FF4081",    
+  "Superficies B" = "orange"     
 )
 
-autocorr_bcf <- ggplot(data_autocorr_total, aes(x = autocorr, fill = grupo, color = grupo)) +
-  geom_density(alpha = 0.2, linewidth = 0.8) +
-  scale_fill_manual(values = colores) +
-  scale_color_manual(values = colores) +
-  #geom_vline(xintercept = 1.5, linetype = "solid", color = "black") +
-  labs(
-    #title = "Distribución de la autocorrelación por conjunto y superficie",
-    x = "Autocorrelación",
-    y = "Densidad",
-    fill = "Grupo",
-    color = "Grupo"
+autocorr_bcf <- ggplot(data_autocorr, aes(x = superficie, y = autocorr, fill = superficie, color = superficie)) +
+  # boxplots separados para train y test
+
+  # puntos distribuidos sin amontonarse
+  geom_quasirandom(
+    aes(color = superficie),
+    dodge.width = 0.8,
+    size = 0.8,
+    alpha = 1,
+    shape = 1
   ) +
-  theme_minimal(base_size = 14)
+    geom_boxplot(
+    aes(group = superficie), 
+    width = 0.3,
+    position = position_dodge(width = 0.8),
+    outlier.shape = NA,
+    color = "black",
+    fill = NA
+  ) +
+  labs(
+    title = "Autocorrelación para cadenas de BCF",
+    x = "Superficie",
+    y = "Autocorrelación",
+    fill = "Superficie",
+    color = "Superficie"
+  ) +
+scale_fill_manual(   values = colores,   name = "Superficie" )+
+scale_color_manual(   values = colores,   name = "Superficie" ) +
+    guides(color = guide_legend(
+    override.aes=list(shape = 16, cex = 3))) +
+  theme_minimal(base_size = 12) +
+  labs(x = NULL) +          # quita el título del eje x
+  theme(legend.position = "none")   # elimina la leyenda
+
 autocorr_bcf
 ggsave("../figuras/resultados_ihdp/autocorr_bcf.pdf", units = "in" , plot = ggdraw(autocorr_bcf))
 ```
+
 ```{r}
-df_tiempos <- data.frame(
-  tiempo = c(
-    res_sup_A$BART.tiempo.s., res_sup_A$BCF.tiempo.s., res_sup_A$CF.tiempo.s.,
-    res_sup_B$BART.tiempo.s., res_sup_B$BCF.tiempo.s., res_sup_B$CF.tiempo.s.
-  ),
-  modelo = factor(rep(c("BART", "BCF", "CF"), each = 500, times = 2)),
-  superficie = rep(c("sup.A", "sup.B"), each = 3 * 500)
-)
+sups <- c("A", "B")
+cjto <- c("train", "test")
+mod <- c("BART", "BCF", "CF")
 
-tiempos_todos <- ggplot(df_tiempos, aes(x = modelo, y = tiempo, fill = superficie)) +
-  geom_boxplot(alpha = 0.7, outlier.alpha = 0.3) +
-  scale_fill_manual(values = c("sup.A" = "#FFD700", "sup.B" = "#FF4081")) +
-  labs(
-    #title = "Distribución del tiempo de ejecución por modelo y superficie",
-    x = "Modelo",
-    y = "Tiempo (segundos)",
-    fill = "Superficie"
-  ) +
-  theme_minimal(base_size = 14) +
-  theme(
-    legend.position = c(0.8, 0.8),
-      legend.background = element_rect(
-      fill = "white",    # color de fondo del recuadro
-      color = "black",   # color del borde
-      linewidth = 0.5    # grosor del borde
-    )
-  )
+nombres_cates <- list()
+titulos_plots <- list()
+df_por_sup <- list()
 
-tiempos_todos
-ggsave("../figuras/resultados_ihdp/tiempo_ejec.pdf", units = "in" , plot = ggdraw(tiempos_todos))
+for (sup in sups){
+  df_list <- list()
+  for (cj in cjto){
+    for (m in mod){
+      var <- paste0("cate_sup",sup,"_",cj,"_",m)
+      df <- read.csv(paste0("resultados_sup_aleatoria/", var, ".csv"))
+      assign(var, df)
+      nombres_cates <- append(nombres_cates, var)
+      titulos_plots <- append(titulos_plots, m)
+      df_list <- append(df_list, list(df))
+    }
+  }
+  df_por_sup[[sup]] <- bind_rows(df_list)
+}
+
 ```
 
+```{r}
+ylim_supA <- range(df_por_sup[["A"]]$CATE_estimado, na.rm = TRUE)
+#ylim_supA <- c(ylim_supA[1]-0.5, ylim_supA[2]+0.5)
+ylim_supB <- range(df_por_sup[["B"]]$CATE_estimado, na.rm = TRUE)
+#ylim_supB <- c(ylim_supB[1]-0.5, ylim_supB[2]+0.5)
+```
+
+```{r}
+ylim_supA
+ylim_supB
+```
+
+```{r}
+plot_real_vs_est <- function(df, titulo, ylim = NULL){
+  df$cubre <- as.factor(df$cubre)
+  
+  p <- ggplot(df, aes(x = CATE_real, y = CATE_estimado, color = cubre)) +
+    geom_point(alpha = 0.6, size = 2, shape = 1) +
+    geom_abline(intercept = 0, slope = 1, color = "firebrick1") +
+    geom_hline(yintercept = 4, color = "springgreen2", linetype = "11", size = 1) +
+    labs(
+      x = "ITE",
+      y = expression(widehat(CATE)),
+      title = titulo
+    ) +
+    scale_color_manual(values = c("1" = "deepskyblue", "0" = "hotpink")) +
+    theme_minimal() +
+    guides(color = "none")
+  
+  if (!is.null(ylim)) {
+    p <- p + coord_cartesian(ylim = ylim)
+  }
+  
+  
+  return(p)
+}
+
+
+
+```
+
+```{r}
+graficos_catevsest <- list()
+for (i in 1:length(nombres_cates)){
+  df <- get(nombres_cates[[i]])# recupera el dataframe por su nombre
+  if (grepl("supA", nombres_cates[[i]], fixed = TRUE)){
+    ylim_func <- ylim_supA
+  } else{
+    ylim_func <- ylim_supB
+  }
+  p <- plot_real_vs_est(df, titulos_plots[[i]], ylim_func) # genera el plot
+  # print(p)                       # muestra el plot
+  graficos_catevsest[[i]] <- p
+}
+```
+
+```{r}
+library(patchwork)
+catevsest_supA_train <- graficos_catevsest[[1]] + graficos_catevsest[[2]] + graficos_catevsest[[3]] #+plot_annotation(title = "Conjunto Train - Sup. A")
+catevsest_supA_test <- graficos_catevsest[[4]] + graficos_catevsest[[5]] + graficos_catevsest[[6]] #+plot_annotation(title = "Conjunto Test - Sup. A")
+
+catevsest_supB_train <- graficos_catevsest[[7]] + graficos_catevsest[[8]] + graficos_catevsest[[9]] #+plot_annotation(title = "Conjunto Train - Sup. B")
+catevsest_supB_test <- graficos_catevsest[[10]] + graficos_catevsest[[11]] + graficos_catevsest[[12]] #+plot_annotation(title = "Conjunto Test - Sup. B")
+
+catevsest_supA_train
+catevsest_supA_test
+catevsest_supB_train
+catevsest_supB_test
+
+ggsave("../figuras/resultados_ihdp/catevsest_supA_train.pdf", units = "in" , plot = catevsest_supA_train)
+ggsave("../figuras/resultados_ihdp/catevsest_supB_train.pdf", units = "in" , plot = catevsest_supB_train)
+ggsave("../figuras/resultados_ihdp/catevsest_supA_test.pdf", units = "in" , plot = catevsest_supA_test)
+ggsave("../figuras/resultados_ihdp/catevsest_supB_test.pdf", units = "in" , plot = catevsest_supB_test)
+```
+```{r}
+sapply(graficos_catevsest, function(p) p$labels$title)
+```
 
